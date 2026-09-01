@@ -1,0 +1,183 @@
+# backend/core/llm_client.py
+import base64
+import json
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from openai import AsyncOpenAI
+
+from backend.core import config
+from backend.db.connection import get_app_db
+
+RECIPES_DIR = Path(__file__).resolve().parents[1] / "recipes"
+
+# §4.3 Job Map — tier / temperature / stream per job type
+JOB_MAP = {
+    "ideation":            {"tier": "high",   "temp": 0.9, "stream": True},
+    "surprise_me":         {"tier": "high",   "temp": 0.9, "stream": False},
+    "title_gen":           {"tier": "high",   "temp": 0.9, "stream": False},
+    "script_outline":      {"tier": "medium", "temp": 0.7, "stream": False},
+    "script_draft":        {"tier": "high",   "temp": 0.8, "stream": True},
+    "script_punchup":      {"tier": "high",   "temp": 0.7, "stream": False},
+    "script_check":        {"tier": "medium", "temp": 0.2, "stream": False},
+    "style_descriptor":    {"tier": "high",   "temp": 0.5, "stream": False},
+    "character_extract":   {"tier": "medium", "temp": 0.2, "stream": False},
+    "variant_extract":     {"tier": "medium", "temp": 0.2, "stream": False},
+    "environment_extract": {"tier": "medium", "temp": 0.2, "stream": False},
+    "world_scan":          {"tier": "medium", "temp": 0.2, "stream": False},
+    "pose_inference":      {"tier": "medium", "temp": 0.4, "stream": False},
+    "char_prompt":         {"tier": "high",   "temp": 0.5, "stream": False},
+    "env_prompt":          {"tier": "high",   "temp": 0.5, "stream": False},
+    "beat_split":          {"tier": "medium", "temp": 0.2, "stream": False},
+    "beat_prompt":         {"tier": "high",   "temp": 0.5, "stream": False},
+    "retention_analysis":  {"tier": "high",   "temp": 0.5, "stream": False},
+    "lesson_proposal":     {"tier": "high",   "temp": 0.5, "stream": False},
+    "overlay_text":        {"tier": "medium", "temp": 0.5, "stream": False},
+}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_recipe(job_type: str, version: int = 1) -> str:
+    path = RECIPES_DIR / f"{job_type}_v{version}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"Recipe missing: {path.name}")
+    return path.read_text(encoding="utf-8")
+
+
+def _client() -> AsyncOpenAI:
+    s = config.load_settings()
+    return AsyncOpenAI(base_url=s["endpoint"], api_key=s["api_key"] or "missing-key")
+
+
+def _model_for(tier: str) -> str:
+    s = config.load_settings()
+    return s["models"]["high"] if s.get("use_single_model") else s["models"][tier]
+
+
+async def _chat(client, model, temp, messages, use_json=True):
+    """One chat call. Tries JSON mode first, falls back if endpoint rejects it."""
+    if use_json:
+        try:
+            resp = await client.chat.completions.create(
+                model=model, messages=messages, temperature=temp,
+                response_format={"type": "json_object"})
+        except Exception:
+            resp = await client.chat.completions.create(
+                model=model, messages=messages, temperature=temp)
+    else:
+        resp = await client.chat.completions.create(
+            model=model, messages=messages, temperature=temp)
+    usage = getattr(resp, "usage", None)
+    return (resp.choices[0].message.content or "",
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None))
+
+
+def _validate(raw: str, schema):
+    """schema=None → free text job. Otherwise parse + Pydantic validate."""
+    if schema is None:
+        return raw, None
+    try:
+        data = json.loads(raw)
+        return schema.model_validate(data).model_dump(), None
+    except Exception as e:
+        return None, str(e)
+
+
+async def _log_job(job_type, model, temp, context, raw, parsed,
+                   t_in, t_out, ms, error, project_id, channel_id):
+    db = await get_app_db()
+    await db.execute(
+        """INSERT INTO job_log (project_id, channel_id, job_type, inputs, context_pack,
+           model, temperature, raw_output, parsed_output, tokens_in, tokens_out,
+           duration_ms, error, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (project_id, channel_id, job_type, "{}", json.dumps(context), model, temp,
+         raw, json.dumps(parsed) if parsed is not None else None,
+         t_in, t_out, ms, error, now_iso()))
+    await db.commit()
+    await db.close()
+
+
+async def dispatch(job_type: str, context: dict, schema=None,
+                   project_id=None, channel_id=None, recipe_version=1):
+    """§4.1: recipe + context pack → call → validate → repair-retry once → log."""
+    spec = JOB_MAP[job_type]
+    recipe = load_recipe(job_type, recipe_version)
+    model = _model_for(spec["tier"])
+    client = _client()
+
+    messages = [
+        {"role": "system", "content": recipe},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+    ]
+
+    start = time.time()
+    try:
+        raw, t_in, t_out = await _chat(client, model, spec["temp"], messages)
+    except Exception as e:
+        await _log_job(job_type, model, spec["temp"], context, "", None,
+                       None, None, 0, str(e), project_id, channel_id)
+        return {"ok": False, "error": f"LLM connection failed: {e}", "raw": ""}
+
+    parsed, error = _validate(raw, schema)
+
+    if error is not None:
+        # Repair-retry ONCE (§4.1)
+        messages.append({"role": "assistant", "content": raw})
+        messages.append({"role": "user", "content":
+                         f"Your output failed validation: {error}\nReturn ONLY corrected JSON."})
+        raw, t_in2, t_out2 = await _chat(client, model, spec["temp"], messages)
+        t_in = (t_in or 0) + (t_in2 or 0)
+        t_out = (t_out or 0) + (t_out2 or 0)
+        parsed, error = _validate(raw, schema)
+        if error is not None:
+            await _log_job(job_type, model, spec["temp"], context, raw, None,
+                           t_in, t_out, int((time.time() - start) * 1000), error,
+                           project_id, channel_id)
+            return {"ok": False, "error": error, "raw": raw}
+
+    await _log_job(job_type, model, spec["temp"], context, raw, parsed,
+                   t_in, t_out, int((time.time() - start) * 1000), None,
+                   project_id, channel_id)
+    return {"ok": True, "parsed": parsed, "raw": raw}
+
+
+async def dispatch_vision(job_type, image_paths, context, schema=None,
+                          project_id=None, channel_id=None):
+    """Vision job: recipe + images as base64. Free-text output (no JSON mode)."""
+    spec = JOB_MAP[job_type]
+    recipe = load_recipe(job_type)
+    model = _model_for(spec["tier"])
+    client = _client()
+
+    user_content = [{"type": "text", "text": json.dumps(context)}]
+    for p in image_paths:
+        with open(p, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode()
+        ext = Path(p).suffix.lower().lstrip(".")
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png", "webp": "image/webp"}.get(ext, "image/png")
+        user_content.append({"type": "image_url",
+                             "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+    messages = [
+        {"role": "system", "content": recipe},
+        {"role": "user", "content": user_content},
+    ]
+
+    start = time.time()
+    try:
+        raw, t_in, t_out = await _chat(client, model, spec["temp"], messages, use_json=False)
+    except Exception as e:
+        await _log_job(job_type, model, spec["temp"], context, "", None,
+                       None, None, 0, str(e), project_id, channel_id)
+        return {"ok": False, "error": f"Vision call failed: {e}", "raw": ""}
+
+    await _log_job(job_type, model, spec["temp"], context, raw, raw,
+                   t_in, t_out, int((time.time() - start) * 1000), None,
+                   project_id, channel_id)
+    return {"ok": True, "parsed": raw, "raw": raw}

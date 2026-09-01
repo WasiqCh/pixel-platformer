@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&family=Pixelify+Sans:wght@400;700&family=Press+Start+2P&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ... rest of your CSS ... */
+
+body {
+  @apply bg-sky font-body text-ink min-h-screen;
+  /* Simple pixel cloud background pattern */
+  background-image: 
+    radial-gradient(circle at 10% 20%, rgba(255,255,255,0.8) 0%, transparent 20%),
+    radial-gradient(circle at 80% 70%, rgba(255,255,255,0.6) 0%, transparent 25%),
+    radial-gradient(circle at 40% 80%, rgba(255,255,255,0.7) 0%, transparent 15%);
+  background-size: 100% 100%;
+  background-attachment: fixed;
+}
+
+.card {
+  @apply bg-panel border-2 border-ink rounded-md shadow-block p-4;
+}
+
+.btn-primary {
+  @apply bg-primary text-white font-heading font-bold px-4 py-2 border-2 border-ink rounded-md shadow-block 
+         hover:shadow-hover hover:-translate-x-[1px] hover:-translate-y-[1px] 
+         active:shadow-none active:translate-x-0 active:translate-y-0 transition-all;
+}
+
+.pixel-outline {
+  text-shadow: 1px 1px 0 rgba(35, 35, 35, 0.45);
+}
