@@ -145,6 +145,42 @@ async def dispatch(job_type: str, context: dict, schema=None,
                    project_id, channel_id)
     return {"ok": True, "parsed": parsed, "raw": raw}
 
+async def dispatch_stream(job_type: str, context: dict,
+                          project_id=None, channel_id=None, recipe_version=1):
+    """§4.5: async generator yielding SSE frames for streamed jobs."""
+    spec = JOB_MAP[job_type]
+    recipe = load_recipe(job_type, recipe_version)
+    model = _model_for(spec["tier"])
+    client = _client()
+
+    messages = [
+        {"role": "system", "content": recipe},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+    ]
+
+    start = time.time()
+    collected = []
+    try:
+        stream = await client.chat.completions.create(
+            model=model, messages=messages, temperature=spec["temp"], stream=True)
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                collected.append(delta)
+                yield f"data: {json.dumps({'delta': delta})}\n\n"
+    except Exception as e:
+        await _log_job(job_type, model, spec["temp"], context, "".join(collected),
+                       None, None, None, int((time.time() - start) * 1000),
+                       str(e), project_id, channel_id)
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    raw = "".join(collected)
+    await _log_job(job_type, model, spec["temp"], context, raw, raw,
+                   None, None, int((time.time() - start) * 1000), None,
+                   project_id, channel_id)
+    yield "data: [DONE]\n\n"
 
 async def dispatch_vision(job_type, image_paths, context, schema=None,
                           project_id=None, channel_id=None):

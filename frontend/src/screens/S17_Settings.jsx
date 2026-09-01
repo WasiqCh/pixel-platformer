@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
+import StreamLab from '../components/StreamLab';
 
 export default function S17_Settings() {
   const [settings, setSettings] = useState({
@@ -164,6 +165,8 @@ export default function S17_Settings() {
             </label>
           </div>
       </Card>
+
+      <StreamLab />
 
       <div className="flex items-center justify-between gap-4">
         <div className="flex gap-3">

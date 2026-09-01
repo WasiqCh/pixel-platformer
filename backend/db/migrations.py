@@ -57,15 +57,15 @@ CREATE TABLE IF NOT EXISTS job_log (
 """
 
 PROJECT_SCHEMA = """
--- 7. idea_cards
+-- 7. idea_cards (Cross-DB foreign keys removed)
 CREATE TABLE IF NOT EXISTS idea_cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT REFERENCES projects(id),
-    channel_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, content TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1, content TEXT NOT NULL,
     shelf_flag BOOLEAN NOT NULL DEFAULT 0, is_current BOOLEAN NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
--- 8. titles (P-09: added updated_at)
+-- 8. titles
 CREATE TABLE IF NOT EXISTS titles (
     id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
     text TEXT NOT NULL, angle TEXT, style_tag TEXT, char_count INTEGER NOT NULL,
@@ -76,26 +76,26 @@ CREATE TABLE IF NOT EXISTS titles (
 
 -- 9. scripts
 CREATE TABLE IF NOT EXISTS scripts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
-    text TEXT NOT NULL, sections TEXT, word_count INTEGER NOT NULL, duration_sec REAL NOT NULL,
-    locked BOOLEAN NOT NULL DEFAULT 0, locked_by TEXT, locked_at TEXT,
-    source TEXT NOT NULL DEFAULT 'ai', edit_diff TEXT, is_current BOOLEAN NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
-);
+     id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+     text TEXT NOT NULL, sections TEXT, word_count INTEGER NOT NULL, duration_sec REAL NOT NULL,
+     locked BOOLEAN NOT NULL DEFAULT 0, locked_by TEXT, locked_at TEXT,
+     source TEXT NOT NULL DEFAULT 'ai', edit_diff TEXT, is_current BOOLEAN NOT NULL DEFAULT 1,
+     created_at TEXT NOT NULL
+ );
 
--- 10. characters (P-03: added world_record_ref)
+-- 10. characters
 CREATE TABLE IF NOT EXISTS characters (
-    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, faction TEXT,
-    render TEXT NOT NULL DEFAULT 'drawn', names TEXT NOT NULL, appearance TEXT,
-    significance TEXT NOT NULL DEFAULT 'supporting', presence TEXT,
-    green_conflict BOOLEAN NOT NULL DEFAULT 0, library_ref TEXT, world_record_ref TEXT,
-    stale BOOLEAN NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
+     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, faction TEXT,
+     render TEXT NOT NULL DEFAULT 'drawn', names TEXT NOT NULL, appearance TEXT,
+     significance TEXT NOT NULL DEFAULT 'supporting', presence TEXT,
+     green_conflict BOOLEAN NOT NULL DEFAULT 0, library_ref TEXT, world_record_ref TEXT,
+     stale BOOLEAN NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ );
 
--- 11. variants (P-09: added updated_at)
+-- 11. variants (Internal FK kept)
 CREATE TABLE IF NOT EXISTS variants (
-    id TEXT PRIMARY KEY, character_id TEXT NOT NULL, span TEXT NOT NULL, delta TEXT NOT NULL,
+    id TEXT PRIMARY KEY, character_id TEXT NOT NULL REFERENCES characters(id), span TEXT NOT NULL, delta TEXT NOT NULL,
     evidence TEXT, confidence REAL NOT NULL DEFAULT 0.8, rejected_changes TEXT,
     stale BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -116,43 +116,43 @@ CREATE TABLE IF NOT EXISTS environments (
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
--- 14. env_variations
+-- 14. env_variations (Internal FK kept)
 CREATE TABLE IF NOT EXISTS env_variations (
-    id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, state TEXT NOT NULL, span TEXT NOT NULL,
+    id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id), state TEXT NOT NULL, span TEXT NOT NULL,
     evidence TEXT, stale BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 
--- 15. world_records (P-03: shares ID space with characters for fetched persons)
+-- 15. world_records
 CREATE TABLE IF NOT EXISTS world_records (
-    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, type TEXT NOT NULL, text TEXT NOT NULL,
-    script_context TEXT, usage_intent TEXT NOT NULL DEFAULT 'on_screen_insert',
-    search_query TEXT, era_hint TEXT, mode TEXT, layer TEXT NOT NULL DEFAULT 'insert',
-    map_template TEXT, status TEXT NOT NULL DEFAULT 'pending', provenance TEXT,
-    role_tag TEXT, stale BOOLEAN NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
+     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, type TEXT NOT NULL, text TEXT NOT NULL,
+     script_context TEXT, usage_intent TEXT NOT NULL DEFAULT 'on_screen_insert',
+     search_query TEXT, era_hint TEXT, mode TEXT, layer TEXT NOT NULL DEFAULT 'insert',
+     map_template TEXT, status TEXT NOT NULL DEFAULT 'pending', provenance TEXT,
+     role_tag TEXT, stale BOOLEAN NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ );
 
 -- 16. sheets
 CREATE TABLE IF NOT EXISTS sheets (
-    id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, parent_type TEXT NOT NULL, kind TEXT NOT NULL,
-    grid TEXT, poses TEXT, boxes TEXT, box_map TEXT, status TEXT NOT NULL DEFAULT 'draft_prompted',
-    background_color TEXT, kit_version INTEGER, seed TEXT, model TEXT, prompt_text TEXT NOT NULL,
-    references_list TEXT, editor_notes TEXT, reject_reason TEXT, stale BOOLEAN NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
+     id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, parent_type TEXT NOT NULL, kind TEXT NOT NULL,
+     grid TEXT, poses TEXT, boxes TEXT, box_map TEXT, status TEXT NOT NULL DEFAULT 'draft_prompted',
+     background_color TEXT, kit_version INTEGER, seed TEXT, model TEXT, prompt_text TEXT NOT NULL,
+     references_list TEXT, editor_notes TEXT, reject_reason TEXT, stale BOOLEAN NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ );
 
 -- 17. beats
 CREATE TABLE IF NOT EXISTS beats (
-    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, chunk_id TEXT NOT NULL, chunk_text TEXT NOT NULL,
-    text TEXT NOT NULL, word_count INTEGER NOT NULL, duration_sec REAL NOT NULL,
-    text_only BOOLEAN NOT NULL DEFAULT 0, svo TEXT, overlay_text TEXT, overlay_spec TEXT,
-    sort_order INTEGER NOT NULL, stale BOOLEAN NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
+     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, chunk_id TEXT NOT NULL, chunk_text TEXT NOT NULL,
+     text TEXT NOT NULL, word_count INTEGER NOT NULL, duration_sec REAL NOT NULL,
+     text_only BOOLEAN NOT NULL DEFAULT 0, svo TEXT, overlay_text TEXT, overlay_spec TEXT,
+     sort_order INTEGER NOT NULL, stale BOOLEAN NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ );
 
--- 18. beat_elements (P-09: added updated_at)
+-- 18. beat_elements (Internal FK kept)
 CREATE TABLE IF NOT EXISTS beat_elements (
-    id TEXT PRIMARY KEY, beat_id TEXT NOT NULL, asset_ref TEXT NOT NULL, layer TEXT NOT NULL,
+    id TEXT PRIMARY KEY, beat_id TEXT NOT NULL REFERENCES beats(id), asset_ref TEXT NOT NULL, layer TEXT NOT NULL,
     framing TEXT, prompt_text TEXT, refs_to_attach TEXT, editor_note TEXT, improv_note TEXT,
     is_one_off BOOLEAN NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
