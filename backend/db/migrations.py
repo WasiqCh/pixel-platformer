@@ -169,6 +169,21 @@ CREATE TABLE IF NOT EXISTS outlines (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 20. library (Sprint 4.5: asset slots linked to cast/locations)
+CREATE TABLE IF NOT EXISTS library (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    asset_ref TEXT,
+    title TEXT NOT NULL,
+    file_path TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'empty',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 async def init_app_db(db_conn):

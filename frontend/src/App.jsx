@@ -10,6 +10,9 @@ import S05_CastBoard from './screens/S05_CastBoard'
 import S06_VariantTimelines from './screens/S06_VariantTimelines'
 import S07_ScoutBoard from './screens/S07_ScoutBoard'
 import S08_WorldDesk from './screens/S08_WorldDesk'
+import S09_BeatBoard from './screens/S09_BeatBoard'
+import S10_Sheets from './screens/S10_Sheets'
+import S11_Library from './screens/S11_Library'
 import S17_Settings from './screens/S17_Settings'
 
 function App() {
@@ -18,7 +21,7 @@ function App() {
   const [currentChannel, setCurrentChannel] = useState(null)
   const [currentProject, setCurrentProject] = useState(null)
 
-  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'settings']
+  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'settings']
 
   useEffect(() => {
     fetch('/api/v1/settings')
@@ -88,6 +91,18 @@ function App() {
 
             {activeNode === 'world' && (
               <S08_WorldDesk currentProject={currentProject} />
+            )}
+
+            {activeNode === 'beats' && (
+              <S09_BeatBoard currentProject={currentProject} />
+            )}
+
+            {activeNode === 'sheets' && (
+              <S10_Sheets currentProject={currentProject} />
+            )}
+
+            {activeNode === 'library' && (
+              <S11_Library currentProject={currentProject} />
             )}
 
             {activeNode === 'settings' && <S17_Settings />}

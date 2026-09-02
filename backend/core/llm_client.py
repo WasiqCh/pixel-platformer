@@ -33,6 +33,7 @@ JOB_MAP = {
     "world_scan":          {"tier": "medium", "temp": 0.2, "stream": False},
     "env_prompt":          {"tier": "high",   "temp": 0.5, "stream": False},
     "beat_split":          {"tier": "medium", "temp": 0.2, "stream": False},
+    "beat_breakdown":      {"tier": "high",   "temp": 0.3, "stream": False},
     "beat_prompt":         {"tier": "high",   "temp": 0.5, "stream": False},
     "retention_analysis":  {"tier": "high",   "temp": 0.5, "stream": False},
     "lesson_proposal":     {"tier": "high",   "temp": 0.5, "stream": False},

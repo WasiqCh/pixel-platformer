@@ -132,3 +132,45 @@
 - Download Desk P22 consumes search_query/era_hint (Sprint 5/6).
 - Meme-mode toggle UI (scan already detects memes).
 - Library asset linking (Sprint 4).
+
+# SPRINT 4 — DONE ✅ (The Look: P13–P16)
+
+> The pipeline crossed the bridge from TEXT to PICTURES.
+> Script → Beats (storyboard) → Sheets (artist briefs) → Library (real asset slots).
+
+## Completed tasks
+- [x] 4.0 Schema check — beats + beat_elements confirmed (internal FK kept).
+- [x] 4.1 Beats backend (P13) — beat_breakdown recipe; B##/BE## minting; verbatim beat text;
+      SVO action lines; overlay_text; text_only flags; elements linked to C/E/MT/RW with
+      layer (background/midground/insert) + framing (wide/medium/close); 07_beats/beats.md mirror.
+- [x] 4.2 Beat Board UI (S09) — stats bar (beats/seconds/elements), section-grouped timeline,
+      TEXT-ONLY + overlay badges, color-coded element chips, per-beat delete.
+- [x] 4.3 Sheets backend (P14/P15) — 06_assets sheets for every active character & environment;
+      STYLE KIT descriptor header; beat-presence counts; variant lists; green-conflict warnings;
+      deterministic 3x3 grid prompts (9 consistency panels; foliage-safe variant for green locations).
+- [x] 4.4 Sheets UI (S10) — grouped list + preview, 🟢 markers, 📋 Copy 3x3 Prompt (clipboard),
+      Regenerate Sheets.
+- [x] 4.5 Library (LIB##) — library table via schema auto-heal; Scaffold creates one slot per
+      active asset and sets characters/environments.library_ref; file upload → status READY +
+      file mirrored to 06_assets/library/; production-readiness progress bar; safe unlink on delete.
+- [x] 4.6 Doc + commit.
+
+## Proof points (real runs — spice script)
+- 63 beats / 94 elements / 0 unmapped. B05 text-only; B19 "Pepper = Currency" + RW04 coin insert;
+  B37 C01 + MT02; B47 VOC logo; B63 closes on "You are eating history."
+- 25 sheets written in the channel's real style voice; 6 environments carry the
+  "AVOID chroma green" instruction inside their prompts.
+- Library scaffolded 25 slots; upload flips READY and the C01↔LIB01 link is queryable.
+
+## Bugs found & lessons learned
+- dispatch returns PLAIN DICTS (model_dump) → dot-access crashes; bracket access everywhere now.
+- Plain-text 500 = unhandled crash → inner-function + try/except wrapper pattern makes every
+  endpoint fail-loud with a readable message.
+- AI encoding artifacts (â€¢) normalized in the UI layer.
+- Per-module plumbing checklist: file → main.py wire → JOB_MAP line → recipe file.
+
+## Deferred (by design)
+- Download Desk P22 (auto search + download into Library) → Sprint 5/6.
+- Beat editor_note / improv_note UI (columns exist).
+- Channel-level shared library (cross-episode reuse).
+- Grid-prompt double-period polish.
