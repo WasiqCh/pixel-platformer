@@ -1,0 +1,10 @@
+@"
+fastapi
+uvicorn[standard]
+openai
+pillow
+python-multipart
+sse-starlette
+aiosqlite
+pydantic
+"@ | Out-File -Encoding utf8 requirements.txt
