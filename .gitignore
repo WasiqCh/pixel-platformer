@@ -1,7 +1,18 @@
-data/ 
-.venv/ 
-__pycache__/ 
-*.pyc 
-node_modules/ 
-dist/ 
-.env 
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+frontend/dist/
+
+# App data — NEVER commit (API keys + generated content live here)
+data/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
