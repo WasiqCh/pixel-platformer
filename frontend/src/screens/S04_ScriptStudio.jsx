@@ -277,10 +277,16 @@ export default function S04_ScriptStudio({ currentProject }) {
         body: JSON.stringify({ text: scriptText, word_count: currentWordCount, source: scriptSource })
       });
       const data = await safeJson(res);
+      if (data.status === 'unchanged') {
+        alert('No changes since last lock — nothing saved.');
+        return;
+      }
       if (res.ok && data.status === 'locked') {
         setLocked(true);
         refreshVersions();
-        alert(`Locked as v${data.version}!`);
+        alert(`Locked as v${data.version}!` + (data.rippled
+          ? '\n\n⚠ Script text changed — Cast, Variants, Locations and World were flagged STALE. Re-extract them to refresh.'
+          : ''));
       } else {
         alert('Lock failed: ' + (data.detail || 'Unknown error'));
       }

@@ -6,6 +6,10 @@ import S01_Home from './screens/S01_Home'
 import S02_IdeaStudio from './screens/S02_IdeaStudio'
 import S03_TitleStudio from './screens/S03_TitleStudio'
 import S04_ScriptStudio from './screens/S04_ScriptStudio'
+import S05_CastBoard from './screens/S05_CastBoard'
+import S06_VariantTimelines from './screens/S06_VariantTimelines'
+import S07_ScoutBoard from './screens/S07_ScoutBoard'
+import S08_WorldDesk from './screens/S08_WorldDesk'
 import S17_Settings from './screens/S17_Settings'
 
 function App() {
@@ -14,7 +18,7 @@ function App() {
   const [currentChannel, setCurrentChannel] = useState(null)
   const [currentProject, setCurrentProject] = useState(null)
 
-  const routed = ['home', 'idea', 'title', 'script', 'settings']
+  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'settings']
 
   useEffect(() => {
     fetch('/api/v1/settings')
@@ -68,6 +72,22 @@ function App() {
 
             {activeNode === 'script' && (
               <S04_ScriptStudio currentProject={currentProject} />
+            )}
+
+            {activeNode === 'cast' && (
+              <S05_CastBoard currentProject={currentProject} />
+            )}
+
+            {activeNode === 'variants' && (
+              <S06_VariantTimelines currentProject={currentProject} />
+            )}
+
+            {activeNode === 'locations' && (
+              <S07_ScoutBoard currentProject={currentProject} />
+            )}
+
+            {activeNode === 'world' && (
+              <S08_WorldDesk currentProject={currentProject} />
             )}
 
             {activeNode === 'settings' && <S17_Settings />}

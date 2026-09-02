@@ -97,3 +97,38 @@
 - P10 Variant Timelines (Costume/age changes)
 - P11 Scout Board (Environment extraction)
 - P12 World Desk (Real-world assets, maps, memes)
+
+# SPRINT 3 — DONE ✅ (The Brain reads the script)
+
+> The app stopped just generating text and started reading the locked
+> script like a production manager: cast, costumes, locations, real-world
+> assets — all extracted, ID-minted by the app, file-mirrored, reviewable.
+
+## Completed tasks
+- [x] 3.1 Models + 4 extraction recipes + defensive sharding (§4.6)
+- [x] 3.2 Characters backend — C## minting, dual-row RW## for fetched persons (P-03), mention map, diff/merge re-extraction, 04_cast mirrors
+- [x] 3.3 S05 Cast Board UI — cards, significance dropdown, drawn↔fetched toggle, edit, stale section
+- [x] 3.4 Variants backend — V## IDs, spans, confidence, rare/one-off flag, delete
+- [x] 3.5 S06 Variant Timelines UI — vertical life-timeline per character
+- [x] 3.6 Environments backend — E##/EV## minting, green_conflict flags, 05_world mirror
+- [x] 3.7 S07 Scout Board UI — location cards, green banner, presence sections
+- [x] 3.8 World backend — RW##/MT## scan (brands, persons, memes, map triggers with templates), approve/dismiss/edit
+- [x] 3.9 S08 World Desk UI — grouped cards, counters, bulk select (approve/dismiss/delete), Select All
+- [x] 3.10 Ripple v1 — script text change flags characters/environments/world stale; unchanged-lock guard; re-extract refreshes
+
+## Proof points (real runs)
+- Napoleon script: 19 characters + 80 mentions (aliases resolved with confidence 0.6-1.0); 12 variants = full life timeline (parchment boy → coronation robes → green-walled exile).
+- Spice script: 18 cast (1 named core: da Gama; rest generic groups — correct for collective history); 0 variants (honest: nobody changes costume); 14 environments with 7 green_conflict foliage flags; 11 world records incl. 3 map triggers (region_highlight / split / flag_fill).
+- Re-extraction never duplicates: diff/merge keeps IDs stable.
+
+## Bugs found & lessons learned
+- AI returns objects where strings expected → field_validator normalizers (environment variations).
+- Free gateways sometimes return EMPTY bodies → 3x retry loops on backend + safeJson on frontend; friendly "wait 30s" messages instead of cryptic JSON errors.
+- "Expecting value: line 1 column 1" was always a masked backend error — now fail-loud everywhere.
+- Variants hide behind stale characters via SQL join — no separate variant ripple needed.
+
+## Deferred (by design)
+- Full ripple to sheets/beats (Sprint 5/6).
+- Download Desk P22 consumes search_query/era_hint (Sprint 5/6).
+- Meme-mode toggle UI (scan already detects memes).
+- Library asset linking (Sprint 4).

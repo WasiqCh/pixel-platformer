@@ -1,4 +1,5 @@
 # backend/api/titles.py
+import asyncio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timezone
@@ -55,10 +56,20 @@ async def generate_titles(project_id: str, req: GenerateTitlesRequest):
         "past_titles": [],
         "count": req.count,
     }
-    result = await dispatch("title_gen", context, schema=TitleGenResult,
-                            project_id=project_id, channel_id=ch_id)
+    result = None
+    for attempt in range(3):
+        result = await dispatch("title_gen", context, schema=TitleGenResult,
+                                project_id=project_id, channel_id=ch_id)
+        if result["ok"]:
+            break
+        err = str(result.get("error", ""))
+        if not any(k in err for k in ("Expecting value", "Unterminated", "Invalid", "JSON")):
+            break
+        await asyncio.sleep(3)
     if not result["ok"]:
-        raise HTTPException(500, result.get("error", "AI failed"))
+        raise HTTPException(500,
+            "The AI gateway returned an empty or broken answer (temporary rate limiting). "
+            "Wait ~30 seconds and click again - nothing was lost. Raw: " + str(result.get("error"))[:200])
 
     proj_db = await get_project_db(folder)
     now = _now()

@@ -38,6 +38,22 @@ export default function S02_IdeaStudio({ currentProject, currentChannel, onNavig
     setLoading(false);
   };
 
+  const promoteSurprise = async (conceptText) => {
+    setLoading(true);
+    // We send the raw concept through the generator to flesh out the hooks/appeal
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/ideas/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: conceptText })
+    });
+    if (res.ok) {
+      refresh(); // Reloads the Active ideas list below
+      setSurprises([]); // Clears the 6 concepts since we promoted one
+    } else {
+      alert('Promote failed: ' + ((await res.json()).detail || 'Unknown error'));
+    }
+    setLoading(false);
+  };
+
   const lock = async (id) => {
     await fetch(`/api/v1/projects/${currentProject.id}/ideas/${id}/lock`, { method: 'POST' });
     refresh();
@@ -183,13 +199,20 @@ export default function S02_IdeaStudio({ currentProject, currentChannel, onNavig
         <Card title="Surprise Concepts" actions={<button onClick={() => setSurprises([])} className="text-sm text-ink/60 hover:text-danger font-heading">Clear</button>}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {surprises.map((s, i) => (
-              <div key={i} className="p-3 border-2 border-ink/30 rounded bg-sky/10">
-                <p className="font-body font-bold mb-2">{s.concept}</p>
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {s.tags.map(t => <span key={t} className="text-xs bg-panel border border-ink px-2 py-0.5 rounded">{t}</span>)}
+              <div key={i} className="p-3 border-2 border-ink/30 rounded bg-sky/10 flex flex-col justify-between">
+                <div>
+                  <p className="font-body font-bold mb-2">{s.concept}</p>
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {s.tags.map(t => <span key={t} className="text-xs bg-panel border border-ink px-2 py-0.5 rounded">{t}</span>)}
+                  </div>
+                  <p className="text-xs text-ink/60 mb-2">Scale: {s.scale_estimate.characters}C / {s.scale_estimate.environments}E</p>
+                  {s.rw_watchout && <p className="text-xs text-danger font-bold">⚠ Needs real-world assets</p>}
                 </div>
-                <p className="text-xs text-ink/60">Scale: {s.scale_estimate.characters}C / {s.scale_estimate.environments}E</p>
-                {s.rw_watchout && <p className="text-xs text-danger font-bold mt-1">⚠ Needs real-world assets</p>}
+                <div className="flex justify-end mt-3 pt-2 border-t border-ink/10">
+                  <BlockButton onClick={() => promoteSurprise(s.concept)} disabled={loading}>
+                    🚀 Promote to Idea
+                  </BlockButton>
+                </div>
               </div>
             ))}
           </div>

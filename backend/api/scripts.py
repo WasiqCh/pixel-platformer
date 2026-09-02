@@ -10,6 +10,7 @@ from backend.core.llm_client import dispatch, dispatch_stream
 from backend.db.connection import get_app_db, get_project_db
 from backend.models.script import OutlineResult, CheckResult, AutoSectionResult
 from backend.storage.fs_manager import get_project_dir
+from backend.core.ripple import flag_downstream_stale
 
 router = APIRouter(tags=["scripts"])
 
@@ -239,7 +240,7 @@ async def stream_draft(project_id: str, outline: OutlineResult):
         dispatch_stream("script_draft", context, project_id=project_id, channel_id=ch_id),
         media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-# ---------- Lock (versioned file mirror + unchanged guard) ----------
+# ---------- Lock (versioned file mirror + unchanged guard + ripple) ----------
 @router.post("/projects/{project_id}/script/lock")
 async def lock_script(project_id: str, req: LockRequest):
     folder, ch_id = await _get_proj_info(project_id)
@@ -247,10 +248,18 @@ async def lock_script(project_id: str, req: LockRequest):
     duration_sec = (req.word_count / 150.0) * 60.0
 
     proj_db = await get_project_db(folder)
-    # Always increment version
     async with proj_db.execute("SELECT COUNT(*) FROM scripts WHERE project_id=?", (project_id,)) as cur:
         v = (await cur.fetchone())[0] + 1
-    
+    async with proj_db.execute(
+        "SELECT text FROM scripts WHERE project_id=? AND locked=1 ORDER BY id DESC LIMIT 1",
+        (project_id,)) as cur:
+        prev = await cur.fetchone()
+
+    # Unchanged guard: no spam versions
+    if prev and prev["text"] == req.text:
+        await proj_db.close()
+        return {"status": "unchanged", "duration_sec": duration_sec}
+
     await proj_db.execute(
         "INSERT INTO scripts (project_id, version, text, word_count, duration_sec, locked, locked_at, source, created_at) "
         "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
@@ -258,18 +267,22 @@ async def lock_script(project_id: str, req: LockRequest):
     await proj_db.commit()
     await proj_db.close()
 
-    # File mirror
     script_dir = get_project_dir(ch_id, folder.split("_")[1]) / "03_script"
     script_dir.mkdir(parents=True, exist_ok=True)
     (script_dir / f"locked_v{v}.md").write_text(req.text, encoding="utf-8")
 
-    # Update project stage
     app_db = await get_app_db()
     await app_db.execute("UPDATE projects SET stage='script', updated_at=? WHERE id=?", (now, project_id))
     await app_db.commit()
     await app_db.close()
-    
-    return {"status": "locked", "duration_sec": duration_sec, "version": v}
+
+    # RIPPLE: text changed vs previous lock -> flag brain artifacts stale
+    rippled = False
+    if prev and prev["text"] != req.text:
+        await flag_downstream_stale(folder, project_id)
+        rippled = True
+
+    return {"status": "locked", "duration_sec": duration_sec, "version": v, "rippled": rippled}
 
 # ---------- Pass 3: Punch-up ----------
 @router.post("/projects/{project_id}/script/punchup")

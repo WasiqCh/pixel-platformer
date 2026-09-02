@@ -11,6 +11,10 @@ from backend.api import projects as projects_api    # <--- ADD
 from backend.api import ideation as ideation_api  # <--- ADD
 from backend.api import titles as titles_api  # <--- ADD
 from backend.api import scripts as scripts_api  # <--- ADD
+from backend.api import characters as characters_api  # <--- ADD
+from backend.api import variants as variants_api  # <--- ADD
+from backend.api import environments as environments_api  # <--- ADD
+from backend.api import world as world_api  # <--- ADD
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,3 +38,7 @@ app.include_router(settings_api.router, prefix="/api/v1")
 app.include_router(llm_api.router, prefix="/api/v1")
 app.include_router(channels_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(projects_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(characters_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(variants_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(environments_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(world_api.router, prefix="/api/v1")  # <--- ADD

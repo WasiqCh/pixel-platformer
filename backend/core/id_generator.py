@@ -43,7 +43,10 @@ class IDGenerator:
         return f"C{max_num + 1:02d}"
 
     async def mint_rw_or_mt(self, type_prefix: str) -> str:
-        query = "SELECT id FROM world_records WHERE id LIKE 'RW%' OR id LIKE 'MT%'"
+        if type_prefix == "V":
+            query = "SELECT id FROM variants WHERE id LIKE 'V%'"
+        else:
+            query = f"SELECT id FROM world_records WHERE id LIKE '{type_prefix}%'"
         max_num = await _get_max_num(self.db, query)
         return f"{type_prefix}{max_num + 1:02d}"
 
