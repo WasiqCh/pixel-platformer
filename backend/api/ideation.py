@@ -121,3 +121,19 @@ async def lock_idea(project_id: str, idea_id: int):
     await proj_db.commit()
     await proj_db.close()
     return {"status": "locked"}
+
+@router.post("/projects/{project_id}/ideas/{idea_id}/shelf")
+async def toggle_shelf(project_id: str, idea_id: int):
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT shelf_flag FROM idea_cards WHERE id=? AND project_id=?", (idea_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Idea not found")
+    
+    new_flag = 0 if row["shelf_flag"] else 1
+    await proj_db.execute("UPDATE idea_cards SET shelf_flag=?, updated_at=? WHERE id=?", (new_flag, _now(), idea_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"shelf_flag": new_flag}

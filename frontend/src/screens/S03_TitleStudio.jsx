@@ -3,7 +3,7 @@ import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
 
-export default function S03_TitleStudio({ currentProject }) {
+export default function S03_TitleStudio({ currentProject, onNavigate }) {
   const [titles, setTitles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [ownTitle, setOwnTitle] = useState('');
@@ -166,6 +166,13 @@ export default function S03_TitleStudio({ currentProject }) {
           </div>
         </Card>
       )}
+
+      <Card title="Fast Lane / Skip Doors">
+        <p className="font-body text-sm text-ink/70 mb-4">Locked your title? Jump straight to scripting.</p>
+        <div className="flex gap-4">
+          <BlockButton variant="secondary" onClick={() => onNavigate('script')}>Skip to Script →</BlockButton>
+        </div>
+      </Card>
     </div>
   );
 }

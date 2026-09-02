@@ -3,7 +3,7 @@ import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
 
-export default function S02_IdeaStudio({ currentProject, currentChannel }) {
+export default function S02_IdeaStudio({ currentProject, currentChannel, onNavigate }) {
   const [input, setInput] = useState('');
   const [ideas, setIdeas] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -40,6 +40,11 @@ export default function S02_IdeaStudio({ currentProject, currentChannel }) {
 
   const lock = async (id) => {
     await fetch(`/api/v1/projects/${currentProject.id}/ideas/${id}/lock`, { method: 'POST' });
+    refresh();
+  };
+
+  const toggleShelf = async (id) => {
+    await fetch(`/api/v1/projects/${currentProject.id}/ideas/${id}/shelf`, { method: 'POST' });
     refresh();
   };
 
@@ -86,6 +91,9 @@ export default function S02_IdeaStudio({ currentProject, currentChannel }) {
     refresh();
   };
 
+  const activeIdeas = ideas.filter(i => !i.shelf_flag);
+  const shelvedIdeas = ideas.filter(i => i.shelf_flag);
+
   if (!currentProject) {
     return (
       <div className="max-w-3xl mx-auto mt-12 text-center card">
@@ -95,18 +103,72 @@ export default function S02_IdeaStudio({ currentProject, currentChannel }) {
     );
   }
 
+  const renderIdeaCard = (idea) => (
+    <div key={idea.id} className={`p-4 border-2 rounded-md ${idea.is_current ? 'border-success bg-success/10 shadow-block' : 'border-ink bg-panel'}`}>
+      {editingId === idea.id ? (
+        <div className="space-y-3">
+          <textarea name="edit_concept" value={editDraft.concept}
+            onChange={e => setEditDraft({ ...editDraft, concept: e.target.value })}
+            className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={3} />
+          <textarea name="edit_appeal" value={editDraft.appeal}
+            onChange={e => setEditDraft({ ...editDraft, appeal: e.target.value })}
+            className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={2} placeholder="appeal" />
+          <textarea name="edit_hooks" value={editDraft.hooks}
+            onChange={e => setEditDraft({ ...editDraft, hooks: e.target.value })}
+            className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={3} placeholder="one hook per line" />
+          <input name="edit_tags" value={editDraft.tags}
+            onChange={e => setEditDraft({ ...editDraft, tags: e.target.value })}
+            className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" placeholder="tags, comma, separated" />
+          <div className="flex gap-2 justify-end">
+            <BlockButton variant="secondary" onClick={() => setEditingId(null)}>Cancel</BlockButton>
+            <BlockButton onClick={() => saveEdit(idea.id)}>Save Edit</BlockButton>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex justify-between items-start mb-2">
+            <h3 className="font-heading text-lg font-bold">{idea.content.concept}</h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono text-ink/50">v{idea.version}</span>
+              {idea.is_current
+                ? <span className="flex items-center gap-1 text-success font-bold text-sm"><StatusDot status="approved" /> LOCKED</span>
+                : <StatusDot status="default" />}
+            </div>
+          </div>
+          <p className="font-body text-sm text-ink/80 mb-3">{idea.content.appeal}</p>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {idea.content.hooks.map((h, i) => (
+              <span key={i} className="text-xs bg-info/20 border border-info px-2 py-1 rounded font-bold">{h}</span>
+            ))}
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="flex gap-4 text-xs text-ink/60">
+              <span>Tags: {idea.content.tags.join(', ')}</span>
+              <span>Scale: {idea.content.scale_estimate.characters}C / {idea.content.scale_estimate.environments}E</span>
+              {idea.content.rw_watchout && <span className="text-danger font-bold">⚠ RW</span>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => toggleShelf(idea.id)} className="text-xs font-heading hover:text-warn" title={idea.shelf_flag ? "Unshelf" : "Shelf"}>
+                {idea.shelf_flag ? '📤 Unshelf' : '📥 Shelf'}
+              </button>
+              <BlockButton variant="secondary" onClick={() => startEdit(idea)}>✏️</BlockButton>
+              <BlockButton variant="secondary" onClick={() => refine(idea.id)} disabled={loading}>🤖</BlockButton>
+              {!idea.is_current && <BlockButton onClick={() => lock(idea.id)}>🔒</BlockButton>}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <h2 className="font-display text-2xl text-ink">Idea Studio</h2>
 
       <Card title="Brainstorm">
-        <textarea
-          name="idea_input"
-          value={input}
-          onChange={e => setInput(e.target.value)}
+        <textarea name="idea_input" value={input} onChange={e => setInput(e.target.value)}
           placeholder="Type a raw idea, a topic, or just one word..."
-          className="w-full h-32 bg-white border-2 border-ink rounded-md p-3 font-body text-lg mb-4 focus:outline-none focus:border-info resize-none"
-        />
+          className="w-full h-32 bg-white border-2 border-ink rounded-md p-3 font-body text-lg mb-4 focus:outline-none focus:border-info resize-none" />
         <div className="flex gap-3">
           <BlockButton onClick={generate} disabled={loading || !input.trim()}>
             {loading ? 'Thinking...' : 'Refine & Expand'}
@@ -118,9 +180,7 @@ export default function S02_IdeaStudio({ currentProject, currentChannel }) {
       </Card>
 
       {surprises.length > 0 && (
-        <Card title="Surprise Concepts" actions={
-          <button onClick={() => setSurprises([])} className="text-sm text-ink/60 hover:text-danger font-heading">Clear</button>
-        }>
+        <Card title="Surprise Concepts" actions={<button onClick={() => setSurprises([])} className="text-sm text-ink/60 hover:text-danger font-heading">Clear</button>}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {surprises.map((s, i) => (
               <div key={i} className="p-3 border-2 border-ink/30 rounded bg-sky/10">
@@ -136,69 +196,25 @@ export default function S02_IdeaStudio({ currentProject, currentChannel }) {
         </Card>
       )}
 
-      {ideas.length > 0 && (
-        <Card title="Project Ideas (pick one, tweak it, lock it)">
-          <div className="space-y-4">
-            {ideas.map(idea => (
-              <div key={idea.id} className={`p-4 border-2 rounded-md ${idea.is_current ? 'border-success bg-success/10 shadow-block' : 'border-ink bg-panel'}`}>
-                {editingId === idea.id ? (
-                  <div className="space-y-3">
-                    <textarea name="edit_concept" value={editDraft.concept}
-                      onChange={e => setEditDraft({ ...editDraft, concept: e.target.value })}
-                      className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={3} />
-                    <textarea name="edit_appeal" value={editDraft.appeal}
-                      onChange={e => setEditDraft({ ...editDraft, appeal: e.target.value })}
-                      className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={2}
-                      placeholder="appeal" />
-                    <textarea name="edit_hooks" value={editDraft.hooks}
-                      onChange={e => setEditDraft({ ...editDraft, hooks: e.target.value })}
-                      className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm" rows={3}
-                      placeholder="one hook per line" />
-                    <input name="edit_tags" value={editDraft.tags}
-                      onChange={e => setEditDraft({ ...editDraft, tags: e.target.value })}
-                      className="w-full bg-white border-2 border-ink rounded p-2 font-body text-sm"
-                      placeholder="tags, comma, separated" />
-                    <div className="flex gap-2 justify-end">
-                      <BlockButton variant="secondary" onClick={() => setEditingId(null)}>Cancel</BlockButton>
-                      <BlockButton onClick={() => saveEdit(idea.id)}>Save Edit</BlockButton>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-heading text-lg font-bold">{idea.content.concept}</h3>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono text-ink/50">v{idea.version}</span>
-                        {idea.is_current
-                          ? <span className="flex items-center gap-1 text-success font-bold text-sm"><StatusDot status="approved" /> LOCKED</span>
-                          : <StatusDot status="default" />}
-                      </div>
-                    </div>
-                    <p className="font-body text-sm text-ink/80 mb-3">{idea.content.appeal}</p>
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      {idea.content.hooks.map((h, i) => (
-                        <span key={i} className="text-xs bg-info/20 border border-info px-2 py-1 rounded font-bold">{h}</span>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex gap-4 text-xs text-ink/60">
-                        <span>Tags: {idea.content.tags.join(', ')}</span>
-                        <span>Scale: {idea.content.scale_estimate.characters}C / {idea.content.scale_estimate.environments}E</span>
-                        {idea.content.rw_watchout && <span className="text-danger font-bold">⚠ RW</span>}
-                      </div>
-                      <div className="flex gap-2">
-                        <BlockButton variant="secondary" onClick={() => startEdit(idea)}>✏️ Edit</BlockButton>
-                        <BlockButton variant="secondary" onClick={() => refine(idea.id)} disabled={loading}>🤖 Refine</BlockButton>
-                        {!idea.is_current && <BlockButton onClick={() => lock(idea.id)}>🔒 Lock</BlockButton>}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
+      {activeIdeas.length > 0 && (
+        <Card title="Active & History">
+          <div className="space-y-4">{activeIdeas.map(renderIdeaCard)}</div>
         </Card>
       )}
+
+      {shelvedIdeas.length > 0 && (
+        <Card title="The Shelf (Saved for later)">
+          <div className="space-y-4 opacity-80">{shelvedIdeas.map(renderIdeaCard)}</div>
+        </Card>
+      )}
+
+      <Card title="Fast Lane / Skip Doors">
+        <p className="font-body text-sm text-ink/70 mb-4">Already have what you need? Jump to the next stage.</p>
+        <div className="flex gap-4">
+          <BlockButton variant="secondary" onClick={() => onNavigate('title')}>Skip to Titles →</BlockButton>
+          <BlockButton variant="secondary" onClick={() => onNavigate('script')}>Skip to Script →</BlockButton>
+        </div>
+      </Card>
     </div>
   );
 }

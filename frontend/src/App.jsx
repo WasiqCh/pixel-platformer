@@ -52,14 +52,18 @@ function App() {
             )}
 
             {activeNode === 'idea' && (
-              <S02_IdeaStudio
-                currentProject={currentProject}
-                currentChannel={currentChannel}
+              <S02_IdeaStudio 
+                currentProject={currentProject} 
+                currentChannel={currentChannel} 
+                onNavigate={setActiveNode}
               />
             )}
 
             {activeNode === 'title' && (
-              <S03_TitleStudio currentProject={currentProject} />
+              <S03_TitleStudio 
+                currentProject={currentProject} 
+                onNavigate={setActiveNode}
+              />
             )}
 
             {activeNode === 'script' && (
