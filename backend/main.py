@@ -18,6 +18,7 @@ from backend.api import world as world_api  # <--- ADD
 from backend.api import beats as beats_api  # <--- ADD
 from backend.api import sheets as sheets_api  # <--- ADD
 from backend.api import library as library_api  # <--- ADD
+from backend.api import handoff as handoff_api  # <--- ADD
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,3 +49,4 @@ app.include_router(world_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(beats_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(sheets_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(library_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(handoff_api.router, prefix="/api/v1")  # <--- ADD

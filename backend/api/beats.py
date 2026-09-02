@@ -205,3 +205,44 @@ async def delete_beat(project_id: str, beat_id: str):
     await proj_db.commit()
     await proj_db.close()
     return {"status": "deleted"}
+
+
+@router.get("/projects/{project_id}/beats/{beat_id}/assets")
+async def beat_assets(project_id: str, beat_id: str):
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM beats WHERE id=? AND project_id=?", (beat_id, project_id)) as cur:
+        beat = await cur.fetchone()
+    if not beat:
+        await proj_db.close()
+        raise HTTPException(404, "Beat not found")
+    async with proj_db.execute("SELECT * FROM beat_elements WHERE beat_id=? ORDER BY sort_order", (beat_id,)) as cur:
+        elements = [dict(r) for r in await cur.fetchall()]
+
+    async with proj_db.execute("SELECT * FROM library WHERE project_id=?", (project_id,)) as cur:
+        lib_by_ref = {r["asset_ref"]: dict(r) for r in await cur.fetchall() if r["asset_ref"]}
+    async with proj_db.execute("SELECT id, names FROM characters WHERE project_id=?", (project_id,)) as cur:
+        char_titles = {r["id"]: json.loads(r["names"])[0] for r in await cur.fetchall()}
+    async with proj_db.execute("SELECT id, name FROM environments WHERE project_id=?", (project_id,)) as cur:
+        env_titles = {r["id"]: r["name"] for r in await cur.fetchall()}
+    await proj_db.close()
+
+    manifest = []
+    for el in elements:
+        ref = el["asset_ref"]
+        lib = lib_by_ref.get(ref)
+        entry = {
+            "asset_ref": ref, "layer": el["layer"], "framing": el["framing"],
+            "kind": "character" if ref in char_titles else ("environment" if ref in env_titles else "world"),
+            "title": char_titles.get(ref) or env_titles.get(ref) or (lib["title"] if lib else ref),
+            "status": lib["status"] if lib else "missing",
+            "file_path": (lib["file_path"] or None) if lib else None,
+            "lib_id": lib["id"] if lib else None,
+        }
+        manifest.append(entry)
+
+    ready = sum(1 for m in manifest if m["status"] == "ready")
+    return {"beat_id": beat_id, "text": beat["text"], "svo": beat["svo"],
+            "duration_sec": beat["duration_sec"], "overlay_text": beat["overlay_text"],
+            "ready": ready, "total": len(manifest), "assets": manifest}
+

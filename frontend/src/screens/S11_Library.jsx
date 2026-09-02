@@ -49,8 +49,13 @@ export default function S11_Library({ currentProject }) {
     setPendingLib(null);
   };
 
+  const openSearch = (it) => {
+    const q = (it.search_query || it.title) + ' ' + (it.era_hint || '');
+    window.open('https://www.google.com/search?q=' + encodeURIComponent(q.trim()) + '&tbm=isch', '_blank');
+  };
+
   const remove = async (libId) => {
-    if (!confirm('Delete this library slot? The linked character/location keeps working, just unlinked.')) return;
+    if (!confirm('Delete this library slot?')) return;
     await fetch(`/api/v1/projects/${currentProject.id}/library/${libId}`, { method: 'DELETE' });
     refresh();
   };
@@ -67,6 +72,7 @@ export default function S11_Library({ currentProject }) {
   const pct = items.length ? Math.round((ready / items.length) * 100) : 0;
   const chars = items.filter(i => i.kind === 'character');
   const envs = items.filter(i => i.kind === 'environment');
+  const worlds = items.filter(i => i.kind === 'world');
 
   const row = (it) => (
     <div key={it.id} className={`p-3 border-2 rounded-md flex items-center gap-3 ${
@@ -82,6 +88,9 @@ export default function S11_Library({ currentProject }) {
         it.status === 'ready' ? 'border-success text-success bg-success/20' : 'border-ink/30 text-ink/50'}`}>
         {it.status === 'ready' ? 'READY' : 'EMPTY'}
       </span>
+      {it.kind === 'world' && (
+        <BlockButton variant="secondary" onClick={() => openSearch(it)} title="Open image search">🔎</BlockButton>
+      )}
       <BlockButton variant="secondary" onClick={() => pickFile(it.id)}>📤</BlockButton>
       <button onClick={() => remove(it.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
     </div>
@@ -90,7 +99,7 @@ export default function S11_Library({ currentProject }) {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="font-display text-2xl text-ink">Asset Library (LIB##)</h2>
+        <h2 className="font-display text-2xl text-ink">Asset Library + Download Desk</h2>
         <BlockButton onClick={scaffold} disabled={loading}>
           {loading ? 'Scaffolding...' : '🧱 Scaffold Library'}
         </BlockButton>
@@ -112,19 +121,21 @@ export default function S11_Library({ currentProject }) {
 
       {items.length === 0 ? (
         <Card title="No Library Yet">
-          <p className="font-body text-sm text-ink/70">
-            Click "Scaffold Library" to create one asset slot per active character and location.
-            Then upload drawings/photos into the slots — the app links them automatically.
-          </p>
+          <p className="font-body text-sm text-ink/70">Click "Scaffold Library" to create slots for cast, locations and world assets.</p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Card title={`Characters (${chars.length})`}>
-            <div className="space-y-2 max-h-[36rem] overflow-y-auto pr-1">{chars.map(row)}</div>
+            <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">{chars.map(row)}</div>
           </Card>
           <Card title={`Environments (${envs.length})`}>
-            <div className="space-y-2 max-h-[36rem] overflow-y-auto pr-1">{envs.map(row)}</div>
+            <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">{envs.map(row)}</div>
           </Card>
+          <div className="md:col-span-2">
+            <Card title={`World / Real Assets (${worlds.length}) — 🔎 opens the exact image search`}>
+              <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">{worlds.map(row)}</div>
+            </Card>
+          </div>
         </div>
       )}
     </div>

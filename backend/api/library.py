@@ -48,8 +48,13 @@ async def scaffold_library(project_id: str):
         chars = [(r["id"], json.loads(r["names"])[0]) for r in await cur.fetchall()]
     async with proj_db.execute("SELECT id, name FROM environments WHERE project_id=? AND stale=0 ORDER BY id", (project_id,)) as cur:
         envs = [(r["id"], r["name"]) for r in await cur.fetchall()]
+    async with proj_db.execute("SELECT id, text FROM world_records WHERE project_id=? AND stale=0 ORDER BY id", (project_id,)) as cur:
+        worlds = [(r["id"], r["text"]) for r in await cur.fetchall()]
 
-    items = [("character", c, n) for c, n in chars] + [("environment", e, n) for e, n in envs]
+    items = ([("character", c, n) for c, n in chars] +
+             [("environment", e, n) for e, n in envs] +
+             [("world", w, n) for w, n in worlds])
+
     for kind, ref, title in items:
         async with proj_db.execute("SELECT id FROM library WHERE project_id=? AND asset_ref=?", (project_id, ref)) as cur:
             if await cur.fetchone():
@@ -59,8 +64,11 @@ async def scaffold_library(project_id: str):
             "INSERT INTO library (id, project_id, kind, asset_ref, title, file_path, source, status, notes, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, '', 'manual', 'empty', '', ?, ?)",
             (lib_id, project_id, kind, ref, title, now, now))
-        table = "characters" if kind == "character" else "environments"
-        await proj_db.execute(f"UPDATE {table} SET library_ref=? WHERE id=?", (lib_id, ref))
+        if kind == "character":
+            await proj_db.execute("UPDATE characters SET library_ref=? WHERE id=?", (lib_id, ref))
+        elif kind == "environment":
+            await proj_db.execute("UPDATE environments SET library_ref=? WHERE id=?", (lib_id, ref))
+        # world link lives on library.asset_ref (world_records has no library_ref column)
         created += 1
 
     await proj_db.commit()
@@ -74,6 +82,11 @@ async def list_library(project_id: str):
     proj_db = await get_project_db(folder)
     async with proj_db.execute("SELECT * FROM library WHERE project_id=? ORDER BY kind, id", (project_id,)) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
+    async with proj_db.execute("SELECT id, search_query, era_hint FROM world_records WHERE project_id=?", (project_id,)) as cur:
+        winfo = {r["id"]: (r["search_query"] or "", r["era_hint"] or "") for r in await cur.fetchall()}
+    for r in rows:
+        if r["kind"] == "world":
+            r["search_query"], r["era_hint"] = winfo.get(r["asset_ref"], ("", ""))
     await proj_db.close()
     return rows
 
@@ -97,6 +110,10 @@ async def upload_asset(project_id: str, lib_id: str, file: UploadFile = File(...
     await proj_db.execute(
         "UPDATE library SET file_path=?, status='ready', source='manual', updated_at=? WHERE id=?",
         (rel, _now(), lib_id))
+    if row["kind"] == "world" and row["asset_ref"]:
+        await proj_db.execute(
+            "UPDATE world_records SET provenance=?, updated_at=? WHERE id=?",
+            (rel, _now(), row["asset_ref"]))
     await proj_db.commit()
     await proj_db.close()
     return {"status": "ready", "file_path": rel}

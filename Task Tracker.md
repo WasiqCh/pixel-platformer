@@ -174,3 +174,38 @@
 - Beat editor_note / improv_note UI (columns exist).
 - Channel-level shared library (cross-episode reuse).
 - Grid-prompt double-period polish.
+
+# SPRINT 5 — DONE ✅ (The Build: P22 + assembly + export)
+
+> The pipeline crossed from "knowing" to "having".
+> Every beat can now answer: which images does this shot need, and are they ready?
+
+## Completed tasks
+- [x] 5.1 Download Desk — Library gained world slots (RW/MT); 🔎 opens the exact
+      Google-Images search built from search_query + era_hint; uploading a found image
+      records provenance on the world record (P-03 honesty).
+- [x] 5.2 Shot Kit assembly — GET /beats/{id}/assets resolves the full chain
+      beat → asset_ref → library slot → real file; 📦 panel on every beat shows
+      READY/MISSING per layer+framing.
+- [x] 5.3 Export / Handoff — one click writes 09_handoff/episode_package.json +
+      episode_package.md: script, style kit, 63 beats with shot kits (✅/❌), cast with
+      variants, environments with green flags, world assets with provenance, readiness %.
+- [x] 5.4 Doc + commit.
+
+## Proof points (real runs — spice project)
+- B37 shot kit: C01 (midground/medium) + MT02 (background/wide) — after uploading one
+  image in Library, the kit flipped to 1/2 READY everywhere (beat panel + package).
+- episode_package.md reads like a professional episode bible, grouped by section.
+- Readiness bar = the production metric: 0% → 100% is "ready to animate".
+
+## Architecture lessons
+- Library = single source of truth: one asset file serves every beat that references it,
+  this episode and the next (consistency by construction).
+- Scaffold pattern: Brain output auto-creates the artist checklist — nothing forgotten.
+- Manual 🔎 + 📤 is the SAFE v1 of downloading (no copyright-unsafe auto-scraping);
+  provenance always recorded.
+
+## Deferred
+- Headless auto-download (safety/copyright review first).
+- Channel-level shared library (cross-episode reuse).
+- Render-tool integration (the package is the integration point).

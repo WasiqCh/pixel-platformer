@@ -24,6 +24,8 @@ const refColor = (ref) => {
 export default function S09_BeatBoard({ currentProject }) {
   const [beats, setBeats] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [openBeat, setOpenBeat] = useState(null);
+  const [manifest, setManifest] = useState(null);
 
   const refresh = () => {
     if (currentProject)
@@ -47,6 +49,15 @@ export default function S09_BeatBoard({ currentProject }) {
     if (!confirm('Delete this beat?')) return;
     await fetch(`/api/v1/projects/${currentProject.id}/beats/${beatId}`, { method: 'DELETE' });
     refresh();
+  };
+
+  const collect = async (beatId) => {
+    if (openBeat === beatId) { setOpenBeat(null); setManifest(null); return; }
+    setOpenBeat(beatId); setManifest(null);
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/beats/${beatId}/assets`);
+    const data = await safeJson(res);
+    if (!res.ok) { alert('Collect failed: ' + (data.detail || 'Unknown error')); setOpenBeat(null); return; }
+    setManifest(data);
   };
 
   if (!currentProject) {
@@ -121,8 +132,34 @@ export default function S09_BeatBoard({ currentProject }) {
                         </div>
                       )}
                     </div>
-                    <button onClick={() => remove(b.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
+                    <div className="flex flex-col gap-1">
+                      <button onClick={() => collect(b.id)} title="Collect shot kit"
+                        className="text-xs font-heading font-bold hover:text-info">📦</button>
+                      <button onClick={() => remove(b.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
+                    </div>
                   </div>
+                  {openBeat === b.id && manifest && (
+                    <div className="mt-2 p-2 border-2 border-info/40 bg-info/10 rounded">
+                      <p className="text-xs font-heading font-bold mb-1">
+                        SHOT KIT: {manifest.ready}/{manifest.total} assets ready · {manifest.duration_sec.toFixed(1)}s
+                        {manifest.overlay_text && <span className="ml-2 text-warn">🏷 {clean(manifest.overlay_text)}</span>}
+                      </p>
+                      {manifest.assets.map(a => (
+                        <div key={a.asset_ref} className="flex items-center gap-2 text-xs font-body py-0.5">
+                          <span className={`font-bold px-2 py-0.5 rounded border ${
+                            a.status === 'ready' ? 'border-success text-success bg-success/20' : 'border-danger text-danger bg-danger/10'}`}>
+                            {a.status === 'ready' ? 'READY' : 'MISSING'}
+                          </span>
+                          <span className="font-mono">{a.asset_ref}</span>
+                          <span>{a.title}</span>
+                          <span className="text-ink/50 ml-auto">{a.layer} · {a.framing}</span>
+                        </div>
+                      ))}
+                      {manifest.total - manifest.ready > 0 && (
+                        <p className="text-xs text-ink/60 mt-1 italic">Missing assets → fill them in 📚 Library (use 🔎 for world ones).</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
