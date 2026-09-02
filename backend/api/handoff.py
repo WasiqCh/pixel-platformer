@@ -173,3 +173,65 @@ async def get_handoff(project_id: str):
     if not p.exists():
         return {"package": None}
     return {"package": _summary(json.loads(p.read_text(encoding="utf-8")))}
+
+
+@router.post("/projects/{project_id}/handoff/signoff")
+async def signoff(project_id: str):
+    from backend.api.checkpoint import checkpoint as run_checkpoint
+    data = await run_checkpoint(project_id)
+    if not data["can_advance"]:
+        raise HTTPException(400, "Checkpoint gates failing — pass ✅ Checkpoint and Advance before sign-off.")
+
+    folder, ch_id, pname, descriptor = await _get_proj_info(project_id)
+    now = _now()
+    hand_dir = get_project_dir(ch_id, folder.split("_")[1]) / "09_handoff"
+    hand_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        f"# HANDOFF — {pname}",
+        f"Signed off: {now}",
+        "Stage: handed_off",
+        f"STYLE KIT: {descriptor}",
+        "",
+        "## Definition-of-Done at sign-off",
+    ]
+    for c in data["checks"]:
+        mark = "✅" if c["ok"] else ("❌" if c["required"] else "⚠️")
+        lines.append(f"- {mark} {c['label']} — {c['detail']}")
+    lines += [
+        "",
+        "## Delivered files",
+        "- 03_script/locked_v*.md — locked script versions",
+        "- 04_cast/characters.md · mentions.md · variants.md",
+        "- 05_world/environments.md · world_records.md",
+        "- 06_assets/characters/*_sheet.md · environments/*_sheet.md · library/",
+        "- 07_beats/beats.md",
+        "- 09_handoff/episode_package.json · episode_package.md · HANDOFF.md",
+        "",
+        "This episode is ready for animation / render.",
+        "The episode_package is the integration point for any render tool.",
+    ]
+    md = "\n".join(lines)
+    (hand_dir / "HANDOFF.md").write_text(md, encoding="utf-8")
+
+    db = await get_app_db()
+    await db.execute("UPDATE projects SET stage='handed_off', updated_at=? WHERE id=?", (now, project_id))
+    await db.commit()
+    await db.close()
+    return {"stage": "handed_off", "handoff_md": md}
+
+
+@router.get("/projects/{project_id}/handoff/status")
+async def handoff_status(project_id: str):
+    db = await get_app_db()
+    async with db.execute("SELECT stage FROM projects WHERE id=?", (project_id,)) as cur:
+        row = await cur.fetchone()
+    await db.close()
+    folder, ch_id, pname, descriptor = await _get_proj_info(project_id)
+    p = get_project_dir(ch_id, folder.split("_")[1]) / "09_handoff" / "HANDOFF.md"
+    return {
+        "stage": (row["stage"] if row and row["stage"] else "script"),
+        "signed": p.exists(),
+        "handoff_md": p.read_text(encoding="utf-8") if p.exists() else None,
+    }
+

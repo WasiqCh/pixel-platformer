@@ -209,3 +209,48 @@
 - Headless auto-download (safety/copyright review first).
 - Channel-level shared library (cross-episode reuse).
 - Render-tool integration (the package is the integration point).
+
+# PIXEL PLATFORMER — MVP DONE 🏁
+
+> One wall of text in → one shootable episode package out.
+> Idea → Title → Script → Brain → Look → Build → Ship.
+
+## The seven sprints
+- **S1 Foundation** — FastAPI + per-project SQLite + file mirrors (01–09), tiered LLM
+  dispatcher, defensive sharding, app-minted IDs, pixel-platformer UI theme.
+- **S2 Funnel** — Idea Studio, Title Studio, 4-pass Script Studio with streaming.
+- **S2.5 Polish** — human override on every AI surface, punch-up diff preview,
+  sanity check, script import, versions, shelf, skip doors.
+- **S3 Brain** — Cast (C##/RW## dual rows), Variants (V##), Environments (E## + green
+  flags), World (RW##/MT## map triggers), ripple v1 stale-flagging.
+- **S4 Look** — Beats (B##/BE##, SVO, overlays, text-only), Sheets with 3×3 grid prompts
+  in channel style voice, Library (LIB##) slots.
+- **S5 Build** — Download Desk (🔎 search + provenance), Shot Kit assembly (📦),
+  episode_package.json/.md with readiness %.
+- **S6 Ship** — Checkpoint DoD gate (required vs recommended), Handoff sign-off →
+  HANDOFF.md + stage handed_off.
+
+## Proof (two real episodes processed end-to-end)
+- **Napoleon bio:** 19 cast + 80 mentions, 12-variant life timeline, honest 0-variance
+  where nothing changes.
+- **Spice trade:** 18 cast / 14 locations / 11 world records / 63 beats / 94 elements /
+  0 unmapped; 25 sheets; episode package + signed handoff.
+
+## Principles that held
+1. The app mints every ID — the AI never assigns identity.
+2. Every AI surface has a human override; editing a locked thing = new version.
+3. Fail-loud everywhere: safeJson, 3× retry loops, crash wrappers, readable alerts.
+4. DB + file mirrors: everything survives as plain markdown/json on disk.
+5. Stale = "needs review", never silent deletion.
+6. Real-world assets carry provenance (P-03).
+
+## Post-MVP backlog (when you return)
+- Render-tool integration consuming episode_package.
+- Channel-level shared library (cross-episode reuse).
+- Auto-download with copyright safety review.
+- Beat editor_note/improv_note UI; meme-mode toggle; grid-prompt polish.
+
+## 60-second demo script
+Home → pick project → Script (locked) → Cast Board → Variants → Locations →
+World Desk → Beats (📦 B37) → Sheets (📋 copy prompt) → Library (readiness bar) →
+Export (package) → Checkpoint (advance) → Handoff (🚀 sign-off). Done.

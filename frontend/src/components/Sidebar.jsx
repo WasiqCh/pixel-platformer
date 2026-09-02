@@ -9,7 +9,7 @@ const nodes = [
   { id: 'world', label: 'World Desk', icon: '🌍' },
   { id: 'sheets', label: 'Sheets', icon: '🎨' },
   { id: 'export', label: 'Export', icon: '📦' },
-  { id: 'check', label: 'Checkpoint', icon: '✅' },
+  { id: 'checkpoint', label: 'Checkpoint', icon: '✅' },
   { id: 'library', label: 'Library', icon: '📚' },
   { id: 'beats', label: 'Beats', icon: '🎬' },
   { id: 'handoff', label: 'Handoff', icon: '🚀' },
