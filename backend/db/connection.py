@@ -20,8 +20,9 @@ async def get_app_db() -> aiosqlite.Connection:
 async def get_project_db(folder_name: str) -> aiosqlite.Connection:
     project_dir = DATA_DIR / "projects" / folder_name
     project_dir.mkdir(parents=True, exist_ok=True)
-    db_path = project_dir / "project.db"
-    return await _connect(db_path)
+    db = await _connect(project_dir / "project.db")
+    await init_project_db(db)   # idempotent: heals old DBs whenever schema grows
+    return db
 
 async def setup_databases():
     # 1. Init Global App DB

@@ -21,3 +21,12 @@ class CheckResult(BaseModel):
     issues: List[CheckIssue] = Field(default_factory=list)
     hook_strength: str = "ok"    # strong|ok|weak
     summary: str = ""
+
+class AutoSectionItem(BaseModel):
+    heading: str
+    summary: str = ""
+    role: str = "build"
+    chunk_text: str          # EXACT verbatim original text of the section
+
+class AutoSectionResult(BaseModel):
+    sections: List[AutoSectionItem]

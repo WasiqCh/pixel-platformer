@@ -12,22 +12,25 @@ from backend.db.connection import get_app_db
 
 RECIPES_DIR = Path(__file__).resolve().parents[1] / "recipes"
 
-# §4.3 Job Map — tier / temperature / stream per job type
+# 4.3 Job Map - tier / temperature / stream per job type
 JOB_MAP = {
+    "ideation_refine":     {"tier": "high",   "temp": 0.8, "stream": False},
     "ideation":            {"tier": "high",   "temp": 0.9, "stream": True},
     "surprise_me":         {"tier": "high",   "temp": 0.9, "stream": False},
     "title_gen":           {"tier": "high",   "temp": 0.9, "stream": False},
-    "script_outline":      {"tier": "medium", "temp": 0.7, "stream": False},
-    "script_draft":        {"tier": "high",   "temp": 0.8, "stream": True},
+    "title_variants":      {"tier": "high",   "temp": 0.9, "stream": False},
+    "title_shorten":       {"tier": "medium", "temp": 0.4, "stream": False},
+    "script_outline":      {"tier": "high",   "temp": 0.7, "stream": False},
+    "outline_refine":      {"tier": "medium", "temp": 0.7, "stream": False},
+    "script_draft":        {"tier": "high",   "temp": 0.7, "stream": True},
     "script_punchup":      {"tier": "high",   "temp": 0.7, "stream": False},
     "script_check":        {"tier": "medium", "temp": 0.2, "stream": False},
-    "style_descriptor":    {"tier": "high",   "temp": 0.5, "stream": False},
-    "character_extract":   {"tier": "medium", "temp": 0.2, "stream": False},
-    "variant_extract":     {"tier": "medium", "temp": 0.2, "stream": False},
-    "environment_extract": {"tier": "medium", "temp": 0.2, "stream": False},
+    "script_autosection":  {"tier": "medium", "temp": 0.2, "stream": False},
+    "style_descriptor":    {"tier": "medium", "temp": 0.3, "stream": False},
+    "character_extract":   {"tier": "high",   "temp": 0.3, "stream": False},
+    "variant_extract":     {"tier": "high",   "temp": 0.3, "stream": False},
+    "environment_extract": {"tier": "high",   "temp": 0.3, "stream": False},
     "world_scan":          {"tier": "medium", "temp": 0.2, "stream": False},
-    "pose_inference":      {"tier": "medium", "temp": 0.4, "stream": False},
-    "char_prompt":         {"tier": "high",   "temp": 0.5, "stream": False},
     "env_prompt":          {"tier": "high",   "temp": 0.5, "stream": False},
     "beat_split":          {"tier": "medium", "temp": 0.2, "stream": False},
     "beat_prompt":         {"tier": "high",   "temp": 0.5, "stream": False},
@@ -78,7 +81,7 @@ async def _chat(client, model, temp, messages, use_json=True):
 
 
 def _validate(raw: str, schema):
-    """schema=None → free text job. Otherwise parse + Pydantic validate."""
+    """schema=None -> free text job. Otherwise parse + Pydantic validate."""
     if schema is None:
         return raw, None
     try:
@@ -104,8 +107,11 @@ async def _log_job(job_type, model, temp, context, raw, parsed,
 
 async def dispatch(job_type: str, context: dict, schema=None,
                    project_id=None, channel_id=None, recipe_version=1):
-    """§4.1: recipe + context pack → call → validate → repair-retry once → log."""
-    spec = JOB_MAP[job_type]
+    """Recipe + context pack -> call -> validate -> repair-retry once -> log."""
+    spec = JOB_MAP.get(job_type)
+    if spec is None:
+        return {"ok": False, "error": f"Unknown job '{job_type}' - add it to JOB_MAP", "raw": ""}
+
     recipe = load_recipe(job_type, recipe_version)
     model = _model_for(spec["tier"])
     client = _client()
@@ -126,7 +132,7 @@ async def dispatch(job_type: str, context: dict, schema=None,
     parsed, error = _validate(raw, schema)
 
     if error is not None:
-        # Repair-retry ONCE (§4.1)
+        # Repair-retry ONCE
         messages.append({"role": "assistant", "content": raw})
         messages.append({"role": "user", "content":
                          f"Your output failed validation: {error}\nReturn ONLY corrected JSON."})
@@ -145,10 +151,16 @@ async def dispatch(job_type: str, context: dict, schema=None,
                    project_id, channel_id)
     return {"ok": True, "parsed": parsed, "raw": raw}
 
+
 async def dispatch_stream(job_type: str, context: dict,
                           project_id=None, channel_id=None, recipe_version=1):
-    """§4.5: async generator yielding SSE frames for streamed jobs."""
-    spec = JOB_MAP[job_type]
+    """Async generator yielding SSE frames for streamed jobs."""
+    spec = JOB_MAP.get(job_type)
+    if spec is None:
+        yield f"data: {json.dumps({'error': f'Unknown job {job_type}'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
     recipe = load_recipe(job_type, recipe_version)
     model = _model_for(spec["tier"])
     client = _client()
@@ -182,10 +194,14 @@ async def dispatch_stream(job_type: str, context: dict,
                    project_id, channel_id)
     yield "data: [DONE]\n\n"
 
+
 async def dispatch_vision(job_type, image_paths, context, schema=None,
                           project_id=None, channel_id=None):
     """Vision job: recipe + images as base64. Free-text output (no JSON mode)."""
-    spec = JOB_MAP[job_type]
+    spec = JOB_MAP.get(job_type)
+    if spec is None:
+        return {"ok": False, "error": f"Unknown vision job '{job_type}' - add it to JOB_MAP", "raw": ""}
+
     recipe = load_recipe(job_type)
     model = _model_for(spec["tier"])
     client = _client()

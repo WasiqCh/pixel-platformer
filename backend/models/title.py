@@ -1,4 +1,3 @@
-# backend/models/title.py
 from pydantic import BaseModel
 from typing import List
 
@@ -9,3 +8,6 @@ class TitleCandidate(BaseModel):
 
 class TitleGenResult(BaseModel):
     titles: List[TitleCandidate]
+
+class TitleShortenResult(BaseModel):
+    shortened: str

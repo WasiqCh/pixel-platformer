@@ -31,3 +31,40 @@
 - Font self-hosting → at production packaging.
 - Full ripple engine → Sprint 3 (stale flags exist in schema).
 - Transparency drawer UI → Sprint 6 (job_log already records everything).
+
+# SPRINT 2 — DONE ✅ (The Funnel: idea → locked script)
+
+## Completed tasks
+- [x] 2.1 Models + recipes — idea/title/script Pydantic schemas; recipes: surprise_me, script_outline, script_draft, script_punchup, script_check.
+- [x] 2.2 Streaming infra — backend `dispatch_stream` (SSE) + frontend `useStream` hook (fetch+ReadableStream, Option B per §16.4); Stream Lab proved word-by-word pouring + Stop.
+- [x] 2.3 S02 Idea Studio — Refine & Expand, Surprise Me (6 concepts), idea cards persisted to project.db, RW watchout + scale estimates shown.
+- [x] 2.4 S03 Title Studio — 10 candidates with angle/style_tag/char-count, >70 amber warning, Lock → stage 'title'.
+- [x] 2.5/2.6 S04 Script Studio — slider↔duration (@150wpm), Pass 1 outline (sums exactly to target), Pass 2 streamed draft, manual edit, Lock → scripts table + 03_script/locked_v1.md + stage 'script'.
+- [x] 2.7 Lock mechanics — version insert, duration math, file mirror, stage advance.
+- [x] 2.8 Git commit pushed.
+- [x] 2.9 Home polish — rename (slug-only, P-01), fork (copies idea/title/script), delete (DB row + folder), Rescan (reconciles ghosts/orphans).
+
+## Bugs found & lessons learned
+- **BlockButton ignored `disabled`** → "Stream Full Draft" clickable with no outline → body `null` → 422. Fixed globally; all screens now safe from double-clicks.
+- **Cross-database foreign keys are impossible in SQLite** → `REFERENCES projects(id)` inside project.db crashed ("no such table: main.projects") and left a locked connection. Removed cross-DB FKs; app logic enforces integrity.
+- **Ghost state / orphaned records** — manually deleting a folder left a DB row; UI showed a ghost that 500'd. Terminology learned: orphaned record, ghost state, fail-loud. Rescan endpoint now auto-heals both directions.
+- **Port collision** with another local project → backend moved to :8100 (frontend :3000; other project keeps :8000).
+- **Catch-all route swallowed screens** → App.jsx now uses a `routed` list; unknown nodes get the placeholder, known nodes always render.
+- **A11y console warnings** → all form fields got name attributes.
+
+## Proof points (seen on screen)
+- Constantinople idea card generated (8C/6E, RW watchout ⚠).
+- Titles generated + one locked.
+- Outline budgets summed exactly to 1400 and 1200 targets.
+- Drafts streamed live (1019 & 808 words — free models under-deliver length; recipe tuning deferred).
+- locked_v1.md on disk; rename kept folder stable; Rescan removed ghost rows.
+
+## Deferred to polish (intentional)
+- Pass 3 punch-up + Pass 4 check UI (recipes exist, UI later).
+- Script import door, hook highlight, pacing strip, breakdown sidebar, VersionPill UI.
+- Draft-length recipe tightening for free-tier models.
+- (Fixed right after Sprint 2 close: script now loads back on revisit — GET /script + load-on-mount + editing-unlocks.)
+
+## File inventory added in Sprint 2
+- backend: api/{ideation,titles,scripts}.py · models/{idea,title,script}.py · recipes/{surprise_me,script_outline,script_draft,script_punchup,script_check}_v1.txt
+- frontend: hooks/useStream.js · components/{StreamLab,SliderWithBadge}.jsx · screens/{S02_IdeaStudio,S03_TitleStudio,S04_ScriptStudio}.jsx

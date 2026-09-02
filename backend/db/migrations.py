@@ -157,6 +157,18 @@ CREATE TABLE IF NOT EXISTS beat_elements (
     is_one_off BOOLEAN NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+
+-- 19. outlines (Sprint 2.5.3: persisted, versioned, editable)
+CREATE TABLE IF NOT EXISTS outlines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    sections TEXT NOT NULL,
+    target_words INTEGER NOT NULL,
+    is_current BOOLEAN NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 async def init_app_db(db_conn):
