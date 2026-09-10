@@ -9,8 +9,10 @@ from backend.core.sharding import sharded_extract
 from backend.db.connection import get_app_db, get_project_db
 from backend.models.beat import BeatBreakdownResult
 from backend.storage.fs_manager import get_project_dir
+from backend.core.composer import clean_text
 
 router = APIRouter(tags=["beats"])
+
 
 
 def _now():
@@ -138,6 +140,9 @@ async def _extract_beats_inner(project_id: str):
     added, element_count, unmapped = 0, 0, 0
     rows_for_mirror = []
     for i, b in enumerate(parsed["beats"]):
+        b["overlay_text"] = clean_text(b.get("overlay_text") or "")
+        b["svo"] = clean_text(b.get("svo") or "")
+        b["section"] = clean_text(b.get("section") or "")
         beat_id = await _next_id(proj_db, "beats", "B")
         b_text = b["text"]
         b_section = (b.get("section") or "").strip()
@@ -238,6 +243,11 @@ async def beat_assets(project_id: str, beat_id: str):
             "status": lib["status"] if lib else "missing",
             "file_path": (lib["file_path"] or None) if lib else None,
             "lib_id": lib["id"] if lib else None,
+            "be_id": el["id"],                       # <--- ADD
+            "prompt_text": el["prompt_text"] or "",  # <--- ADD
+            "refs": el["refs_to_attach"] or "",      # <--- ADD
+            "editor_note": el["editor_note"] or "",  # <--- ADD
+            "improv_note": el["improv_note"] or "",  # <--- ADD
         }
         manifest.append(entry)
 

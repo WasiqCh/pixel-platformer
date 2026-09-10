@@ -53,16 +53,18 @@ async def _get_descriptor(ch_id: str) -> str:
 
 def _char_grid_prompt(descriptor: str, name: str, appearance: str) -> str:
     cells = "; ".join(f"[{i + 1}] {c}" for i, c in enumerate(CHAR_CELLS))
-    return (f"{descriptor}. 3x3 character grid sheet of {name}: {appearance}. "
+    desc = descriptor.rstrip(". ")
+    return (f"{desc}. 3x3 character grid sheet of {name}: {appearance}. "
             f"Nine panels, same character, identical design in every panel. {cells}. "
             f"Consistent line weight and palette across all panels.")
 
 
 def _env_grid_prompt(descriptor: str, name: str, elements: str, green: bool) -> str:
     cells = "; ".join(f"[{i + 1}] {c}" for i, c in enumerate(ENV_CELLS))
+    desc = descriptor.rstrip(". ")
     extra = (" AVOID chroma green as a dominant tone; use a painted-sky alternative palette."
              if green else "")
-    return (f"{descriptor}. 3x3 environment grid sheet of {name}: {elements}. "
+    return (f"{desc}. 3x3 environment grid sheet of {name}: {elements}. "
             f"Nine panels of the SAME location at different times and angles. {cells}.{extra} "
             f"Consistent architecture and palette across all panels.")
 

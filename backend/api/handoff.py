@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from backend.db.connection import get_app_db, get_project_db
 from backend.storage.fs_manager import get_project_dir
+from backend.core.composer import classify_overlay, clean_text
+
 
 router = APIRouter(tags=["handoff"])
 
@@ -102,6 +104,7 @@ async def build_handoff(project_id: str):
     await proj_db.close()
 
     total_dur = 0.0
+    clock = 0.0
     pkg_beats = []
     for b in beats:
         total_dur += b["duration_sec"]
@@ -111,11 +114,20 @@ async def build_handoff(project_id: str):
             r["layer"] = el["layer"]
             r["framing"] = el["framing"]
             assets.append(r)
+        graphics = []
+        if b["overlay_text"]:
+            otext = clean_text(b["overlay_text"])
+            graphics.append({"text": otext,
+                             "type": classify_overlay(otext),
+                             "in_point_sec": round(clock, 1),
+                             "duration_sec": b["duration_sec"]})
         pkg_beats.append({
             "id": b["id"], "section": b["chunk_id"], "text": b["text"], "svo": b["svo"],
             "overlay_text": b["overlay_text"], "text_only": bool(b["text_only"]),
-            "duration_sec": b["duration_sec"], "assets": assets,
+            "duration_sec": b["duration_sec"], "in_point_sec": round(clock, 1),
+            "graphics_layer": graphics, "assets": assets,
         })
+        clock += b["duration_sec"]
 
     pkg = {
         "project": pname, "project_id": project_id, "channel_id": ch_id,

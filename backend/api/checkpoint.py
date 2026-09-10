@@ -43,7 +43,11 @@ async def checkpoint(project_id: str):
         green = sum(r["g"] for r in await cur.fetchall())
     async with proj_db.execute("SELECT green_conflict g FROM environments WHERE project_id=? AND stale=0", (project_id,)) as cur:
         green += sum(r["g"] for r in await cur.fetchall())
+    async with proj_db.execute("SELECT duration_sec FROM beats WHERE project_id=? AND stale=0", (project_id,)) as cur:
+        durs = [r["duration_sec"] for r in await cur.fetchall()]
+    outliers = sum(1 for d in durs if d < 3.5 or d > 11)
     await proj_db.close()
+
 
     lib = len(librows)
     ready = sum(1 for st in librows if st == "ready")
@@ -69,6 +73,8 @@ async def checkpoint(project_id: str):
          "detail": f"{ready}/{lib} ready"},
         {"id": "green",   "label": "Green conflicts reviewed","required": False,"ok": True,
          "detail": f"{green} flagged — confirm non-green palette plan"},
+        {"id": "pacing",  "label": "Pacing outliers reviewed", "required": False, "ok": True,
+         "detail": f"{outliers} beats flagged (⚡ too fast / 🐢 too slow) — review in Beat Board"},
     ]
 
     req = [c for c in checks if c["required"]]

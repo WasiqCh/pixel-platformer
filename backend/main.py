@@ -20,6 +20,8 @@ from backend.api import sheets as sheets_api  # <--- ADD
 from backend.api import library as library_api  # <--- ADD
 from backend.api import handoff as handoff_api  # <--- ADD
 from backend.api import checkpoint as checkpoint_api  # <--- ADD
+from backend.api import prompts as prompts_api  # <--- ADD
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,3 +54,4 @@ app.include_router(sheets_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(library_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(handoff_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(checkpoint_api.router, prefix="/api/v1")  # <--- ADD
+app.include_router(prompts_api.router, prefix="/api/v1")  # <--- ADD
