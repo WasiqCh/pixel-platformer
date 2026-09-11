@@ -2,6 +2,8 @@
 from datetime import datetime, timezone
 import asyncio
 import json
+import re
+
 
 from fastapi import APIRouter, HTTPException
 
@@ -60,6 +62,19 @@ def _parse_sections(script: str) -> dict:
 
 def _merge_beats(a: dict, b: dict) -> dict:
     return {"beats": a["beats"] + b["beats"]}
+
+
+def _sentences(text):
+    return [p for p in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if p]
+
+
+async def _renumber(proj_db, project_id):
+    async with proj_db.execute(
+        "SELECT id FROM beats WHERE project_id=? ORDER BY sort_order, id", (project_id,)) as cur:
+        ids = [r["id"] for r in await cur.fetchall()]
+    for i, bid in enumerate(ids):
+        await proj_db.execute("UPDATE beats SET sort_order=? WHERE id=?", (i, bid))
+
 
 
 def _write_beats_mirror(ch_id, folder, rows):
@@ -183,7 +198,9 @@ async def _extract_beats_inner(project_id: str):
     await proj_db.close()
 
     _write_beats_mirror(ch_id, folder, rows_for_mirror)
-    return {"beats": added, "elements": element_count, "unmapped": unmapped}
+    from backend.api.prompts import _compose_all
+    ccounts, _, _ = await _compose_all(project_id, True, True)
+    return {"beats": added, "elements": element_count, "unmapped": unmapped, "compose": ccounts}
 
 
 @router.get("/projects/{project_id}/beats")
@@ -255,4 +272,119 @@ async def beat_assets(project_id: str, beat_id: str):
     return {"beat_id": beat_id, "text": beat["text"], "svo": beat["svo"],
             "duration_sec": beat["duration_sec"], "overlay_text": beat["overlay_text"],
             "ready": ready, "total": len(manifest), "assets": manifest}
+
+
+@router.post("/projects/{project_id}/beats/{beat_id}/merge_next")
+async def merge_next(project_id: str, beat_id: str):
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM beats WHERE id=? AND project_id=?", (beat_id, project_id)) as cur:
+        a = await cur.fetchone()
+    if not a:
+        await proj_db.close()
+        raise HTTPException(404, "Beat not found")
+    a = dict(a)
+    async with proj_db.execute("SELECT * FROM beats WHERE project_id=? AND sort_order=?", (project_id, a["sort_order"] + 1)) as cur:
+        b = await cur.fetchone()
+    if not b:
+        await proj_db.close()
+        raise HTTPException(400, "No next beat to merge.")
+    b = dict(b)
+    if b["chunk_id"] != a["chunk_id"]:
+        await proj_db.close()
+        raise HTTPException(400, "Merge only within the same section.")
+
+    now = _now()
+    new_text = a["text"].rstrip() + " " + b["text"]
+    words = len(new_text.split())
+    overlay = a["overlay_text"] or ""
+    if b["overlay_text"]:
+        overlay = (overlay + " • " + b["overlay_text"]).strip(" • ") if overlay else b["overlay_text"]
+    svo = (a["svo"] + "; " + b["svo"]).strip("; ") if b["svo"] else a["svo"]
+    await proj_db.execute(
+        "UPDATE beats SET text=?, word_count=?, duration_sec=?, svo=?, overlay_text=?, updated_at=? WHERE id=?",
+        (new_text, words, a["duration_sec"] + b["duration_sec"], svo, overlay, now, a["id"]))
+
+    async with proj_db.execute("SELECT asset_ref, layer FROM beat_elements WHERE beat_id=?", (a["id"],)) as cur:
+        have = {(r["asset_ref"], r["layer"]) for r in await cur.fetchall()}
+    so = len(have)
+    async with proj_db.execute("SELECT * FROM beat_elements WHERE beat_id=? ORDER BY sort_order", (b["id"],)) as cur:
+        brows = [dict(r) for r in await cur.fetchall()]
+    for el in brows:
+        if (el["asset_ref"], el["layer"]) in have:
+            await proj_db.execute("DELETE FROM beat_elements WHERE id=?", (el["id"],))
+        else:
+            await proj_db.execute("UPDATE beat_elements SET beat_id=?, sort_order=? WHERE id=?", (a["id"], so, el["id"]))
+            so += 1
+            have.add((el["asset_ref"], el["layer"]))
+    await proj_db.execute("DELETE FROM beats WHERE id=?", (b["id"],))
+    await _renumber(proj_db, project_id)
+    await proj_db.commit()
+    await proj_db.close()
+
+    from backend.api.prompts import _compose_all
+    counts, _, _ = await _compose_all(project_id, True, True)
+    return {"merged_into": a["id"], "removed": b["id"], "compose": counts}
+
+
+@router.post("/projects/{project_id}/beats/{beat_id}/split")
+async def split_beat(project_id: str, beat_id: str):
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM beats WHERE id=? AND project_id=?", (beat_id, project_id)) as cur:
+        a = await cur.fetchone()
+    if not a:
+        await proj_db.close()
+        raise HTTPException(404, "Beat not found")
+    a = dict(a)
+    sents = _sentences(a["text"])
+    if len(sents) < 2:
+        await proj_db.close()
+        raise HTTPException(400, "Beat is a single sentence - nothing to split.")
+
+    half = len(a["text"].split()) / 2
+    acc, cut = 0, 1
+    for i, s in enumerate(sents):
+        acc += len(s.split())
+        if acc >= half:
+            cut = i + 1
+            break
+    if cut >= len(sents):
+        cut = len(sents) - 1
+    p1, p2 = " ".join(sents[:cut]), " ".join(sents[cut:])
+    now = _now()
+    w1, w2 = len(p1.split()), len(p2.split())
+    d1, d2 = (w1 / 150.0) * 60.0, (w2 / 150.0) * 60.0
+
+    await proj_db.execute("UPDATE beats SET text=?, word_count=?, duration_sec=?, updated_at=? WHERE id=?",
+                          (p1, w1, d1, now, a["id"]))
+    await proj_db.execute("UPDATE beats SET sort_order = sort_order + 1 WHERE project_id=? AND sort_order > ?",
+                          (project_id, a["sort_order"]))
+    new_id = await _next_id(proj_db, "beats", "B")
+    await proj_db.execute(
+        "INSERT INTO beats (id, project_id, chunk_id, chunk_text, text, word_count, duration_sec, text_only, "
+        "svo, overlay_text, overlay_spec, sort_order, stale, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
+        (new_id, project_id, a["chunk_id"], a["chunk_text"], p2, w2, d2, a["text_only"], a["svo"], "", "",
+         a["sort_order"] + 1, now, now))
+
+    async with proj_db.execute("SELECT * FROM beat_elements WHERE beat_id=? ORDER BY sort_order", (a["id"],)) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    for j, el in enumerate(rows):
+        be_id = await _next_id(proj_db, "beat_elements", "BE")
+        await proj_db.execute(
+            "INSERT INTO beat_elements (id, beat_id, asset_ref, layer, framing, prompt_text, refs_to_attach, "
+            "editor_note, improv_note, is_one_off, sort_order, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (be_id, new_id, el["asset_ref"], el["layer"], el["framing"], "", "",
+             el["editor_note"], el["improv_note"], el["is_one_off"], j, now, now))
+
+    await _renumber(proj_db, project_id)
+    await proj_db.commit()
+    await proj_db.close()
+
+    from backend.api.prompts import _compose_all
+    counts, _, _ = await _compose_all(project_id, True, True)
+    return {"part1": a["id"], "part2": new_id, "compose": counts}
+
 

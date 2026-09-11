@@ -20,6 +20,8 @@ const refColor = (ref) => {
   return 'bg-danger/20 border-danger text-danger';
 };
 
+const PALETTE = ['#5b8def', '#f2a541', '#6bbf59', '#e05e5e', '#9b6bd6', '#4ecdc4', '#f7b32b', '#7a6ff0'];
+
 export default function S09_BeatBoard({ currentProject }) {
   const [beats, setBeats] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -41,7 +43,11 @@ export default function S09_BeatBoard({ currentProject }) {
       const res = await fetch(`/api/v1/projects/${currentProject.id}/beats/extract`, { method: 'POST' });
       const data = await safeJson(res);
       if (!res.ok) alert('Extract failed:\n\n' + (data.detail || 'Unknown error'));
-      else { alert(`Success! ${data.beats} beats, ${data.elements} elements, ${data.unmapped} unmapped.`); refresh(); }
+      else {
+        alert(`Success! ${data.beats} beats, ${data.elements} elements, ${data.unmapped} unmapped.` +
+          (data.compose ? `\nPrompts auto-composed: ${data.compose.generations} generations.` : ''));
+        refresh();
+      }
     } catch (e) { alert('Network error: ' + e.message); }
     setLoading(false);
   };
@@ -53,6 +59,14 @@ export default function S09_BeatBoard({ currentProject }) {
     const data = await safeJson(res);
     if (!res.ok) { alert('Collect failed: ' + (data.detail || 'Unknown error')); setOpenBeat(null); return; }
     setManifest(data);
+  };
+
+  const jumpTo = (beatId) => {
+    collect(beatId, true);
+    setTimeout(() => {
+      const el = document.getElementById(`beat-${beatId}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
   };
 
   const composeAll = async () => {
@@ -108,6 +122,29 @@ export default function S09_BeatBoard({ currentProject }) {
     refresh();
   };
 
+  const mergeNext = async (b) => {
+    if (!confirm(`Merge ${b.id} with the NEXT beat in the same section?\nThe next beat's text and elements get absorbed into ${b.id}.`)) return;
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/beats/${b.id}/merge_next`, { method: 'POST' });
+    const data = await safeJson(res);
+    if (!res.ok) { alert('Merge failed:\n\n' + (data.detail || 'Unknown error')); return; }
+    alert(`Merged into ${data.merged_into} (removed ${data.removed}).\nPrompts recomposed: ${data.compose.generations} generations.`);
+    refresh();
+    if (openBeat) collect(openBeat, true);
+  };
+
+  const splitBeat = async (b) => {
+    if (!confirm(`Split ${b.id} into two beats at the middle sentence?`)) return;
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/beats/${b.id}/split`, { method: 'POST' });
+    const data = await safeJson(res);
+    if (!res.ok) { alert('Split failed:\n\n' + (data.detail || 'Unknown error')); return; }
+    alert(`Split into ${data.part1} + ${data.part2}.\nPrompts recomposed: ${data.compose.generations} generations.`);
+    refresh();
+    if (openBeat) collect(openBeat, true);
+  };
+
+  const isLastInChunk = (g, b) => g.beats[g.beats.length - 1].id === b.id;
+
+
   if (!currentProject) {
     return (
       <div className="max-w-3xl mx-auto mt-12 text-center card">
@@ -147,6 +184,38 @@ export default function S09_BeatBoard({ currentProject }) {
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{totalElements} ELEMENTS</span>
       </div>
 
+      {beats.length > 0 && (
+        <Card title="Timeline — click a block to jump to that beat">
+          <div className="flex gap-0.5 h-12 w-full pt-2">
+            {beats.map(b => {
+              const gi = groups.findIndex(g => g.chunk === b.chunk_id);
+              const color = PALETTE[gi % PALETTE.length];
+              return (
+                <button key={b.id} onClick={() => jumpTo(b.id)}
+                  title={`${b.id} · ${b.duration_sec.toFixed(1)}s · ${b.text.slice(0, 70)}`}
+                  className="relative rounded-sm border border-ink/30 hover:opacity-80"
+                  style={{ flexGrow: b.duration_sec, minWidth: '8px', backgroundColor: color }}>
+                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white">
+                    {b.duration_sec >= 4 ? b.sort_order + 1 : ''}
+                  </span>
+                  {b.duration_sec < 3.5 && <span className="absolute -top-2 left-0 text-[10px]">⚡</span>}
+                  {b.duration_sec > 11 && <span className="absolute -top-2 left-0 text-[10px]">🐢</span>}
+                  {b.overlay_text && <span className="absolute bottom-0 right-0 text-[8px]">🏷</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-3 mt-3">
+            {groups.map((g, gi) => (
+              <span key={gi} className="flex items-center gap-1 text-xs font-body text-ink/70">
+                <span className="w-3 h-3 rounded-sm border border-ink/30" style={{ backgroundColor: PALETTE[gi % PALETTE.length] }} />
+                {g.chunk}
+              </span>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {beats.length === 0 && (
         <Card title="No Beats Yet">
           <p className="font-body text-sm text-ink/70">Click "Re-Extract Beats" to split the locked script into storyboard moments.</p>
@@ -159,7 +228,7 @@ export default function S09_BeatBoard({ currentProject }) {
           <Card key={gi} title={`${g.chunk} (${g.beats.length} beats · ${Math.round(gSec)}s)`}>
             <div className="space-y-3">
               {g.beats.map(b => (
-                <div key={b.id} className="p-3 border-2 border-ink/20 rounded-md bg-white">
+                <div key={b.id} id={`beat-${b.id}`} className="p-3 border-2 border-ink/20 rounded-md bg-white">
                   <div className="flex items-start gap-3">
                     <span className="font-display text-xs text-ink/40 pt-1">{String(b.sort_order + 1).padStart(2, '0')}</span>
                     <div className="flex-1">
@@ -201,6 +270,11 @@ export default function S09_BeatBoard({ currentProject }) {
                     <div className="flex flex-col gap-1">
                       <button onClick={() => collect(b.id)} title="Shot kit + prompts"
                         className="text-xs font-heading font-bold hover:text-info">📦</button>
+                      <button onClick={() => mergeNext(b)} title="Merge with next beat (same section)"
+                        disabled={isLastInChunk(g, b)}
+                        className="text-xs font-heading font-bold hover:text-success disabled:opacity-30">⤵️</button>
+                      <button onClick={() => splitBeat(b)} title="Split at middle sentence"
+                        className="text-xs font-heading font-bold hover:text-warn">✂️</button>
                       <button onClick={() => remove(b.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
                     </div>
                   </div>
