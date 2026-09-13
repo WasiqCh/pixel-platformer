@@ -10,6 +10,18 @@ const safeJson = async (res) => {
 export default function S12_Export({ currentProject }) {
   const [pkg, setPkg] = useState(null);
   const [building, setBuilding] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const exportEditor = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/export/editor`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) alert('Editor export failed:\n\n' + (data.detail || 'Unknown error'));
+      else alert(`EDITOR TIMELINE EXPORTED\n\n${data.clips} clips · ${data.stickers} stickers · ${data.total_sec}s\nmissing assets: ${data.missing}\n\nFiles:\n${data.files.join('\n')}`);
+    } catch (e) { alert('Network error: ' + e.message); }
+    setExporting(false);
+  };
 
   const refresh = () => {
     if (currentProject)
@@ -41,11 +53,16 @@ export default function S12_Export({ currentProject }) {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-2">
         <h2 className="font-display text-2xl text-ink">Export / Handoff</h2>
-        <BlockButton onClick={build} disabled={building}>
-          {building ? 'Packing...' : '📦 Build Episode Package'}
-        </BlockButton>
+        <div className="flex gap-2 flex-wrap">
+          <BlockButton variant="secondary" onClick={exportEditor} disabled={exporting}>
+            {exporting ? 'Exporting...' : '🎞️ Export Editor Timeline'}
+          </BlockButton>
+          <BlockButton onClick={build} disabled={building}>
+            {building ? 'Packing...' : '📦 Build Episode Package'}
+          </BlockButton>
+        </div>
       </div>
 
       {!pkg ? (

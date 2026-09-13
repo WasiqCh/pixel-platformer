@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS job_log (
     parsed_output TEXT, tokens_in INTEGER, tokens_out INTEGER,
     duration_ms INTEGER, error TEXT, created_at TEXT NOT NULL
 );
+
+-- image generation settings (single row)
+CREATE TABLE IF NOT EXISTS image_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider TEXT NOT NULL DEFAULT 'manual',
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'gemini-2.5-flash-image',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 PROJECT_SCHEMA = """
@@ -181,6 +190,23 @@ CREATE TABLE IF NOT EXISTS library (
     source TEXT NOT NULL DEFAULT 'manual',
     status TEXT NOT NULL DEFAULT 'empty',
     notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 21. generations (Sprint 9: image generation queue)
+CREATE TABLE IF NOT EXISTS generations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    gen_label TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    asset_ref TEXT NOT NULL,
+    beat_id TEXT,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    file_path TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

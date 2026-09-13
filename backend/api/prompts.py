@@ -1,4 +1,5 @@
 # backend/api/prompts.py
+from datetime import datetime, timezone
 from typing import Optional
 import json
 
@@ -190,6 +191,31 @@ async def _compose_all(project_id, update_db, write):
         scenes.append(scene)
 
     if update_db:
+        await proj_db.commit()
+        now = datetime.now(timezone.utc).isoformat()
+        async with proj_db.execute("SELECT * FROM generations WHERE project_id=?", (project_id,)) as cur:
+            existing = {(r["kind"], r["asset_ref"], r["beat_id"] or ""): dict(r) for r in await cur.fetchall()}
+        seen = set()
+        for g in generations:
+            key = (g["kind"], g["asset_ref"], g["beat_id"] or "")
+            seen.add(key)
+            ex = existing.get(key)
+            if ex:
+                await proj_db.execute(
+                    "UPDATE generations SET gen_label=?, title=?, prompt=?, updated_at=? WHERE id=?",
+                    (g["gen_id"], g["title"], g["prompt"], now, ex["id"]))
+                g["db_id"], g["file_path"], g["status"] = ex["id"], ex["file_path"], ex["status"]
+            else:
+                await proj_db.execute(
+                    "INSERT INTO generations (project_id, gen_label, kind, asset_ref, beat_id, title, prompt, "
+                    "file_path, status, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'','pending','',?,?)",
+                    (project_id, g["gen_id"], g["kind"], g["asset_ref"], g["beat_id"], g["title"], g["prompt"], now, now))
+                async with proj_db.execute("SELECT id FROM generations WHERE project_id=? AND gen_label=?", (project_id, g["gen_id"])) as cur:
+                    g["db_id"] = (await cur.fetchone())["id"]
+                g["file_path"], g["status"] = "", "pending"
+        for key, ex in existing.items():
+            if key not in seen:
+                await proj_db.execute("DELETE FROM generations WHERE id=?", (ex["id"],))
         await proj_db.commit()
     await proj_db.close()
 
