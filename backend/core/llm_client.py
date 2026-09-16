@@ -1,4 +1,5 @@
 # backend/core/llm_client.py
+import asyncio
 import base64
 import json
 import time
@@ -9,6 +10,24 @@ from openai import AsyncOpenAI
 
 from backend.core import config
 from backend.db.connection import get_app_db
+
+# --- Rate Limiting ---
+_MAX_CONCURRENT = 2
+_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENT)
+
+async def _with_backoff(coro, max_retries=3, base_delay=2.0):
+    """Execute coroutine with exponential backoff on 429/timeout."""
+    delay = base_delay
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate = any(k in err_str for k in ("429", "rate limit", "quota", "timeout"))
+            if not is_rate or attempt == max_retries:
+                raise
+            await asyncio.sleep(delay)
+            delay *= 2
 
 RECIPES_DIR = Path(__file__).resolve().parents[1] / "recipes"
 
@@ -108,129 +127,143 @@ async def _log_job(job_type, model, temp, context, raw, parsed,
 
 async def dispatch(job_type: str, context: dict, schema=None,
                    project_id=None, channel_id=None, recipe_version=1):
-    """Recipe + context pack -> call -> validate -> repair-retry once -> log."""
-    spec = JOB_MAP.get(job_type)
-    if spec is None:
-        return {"ok": False, "error": f"Unknown job '{job_type}' - add it to JOB_MAP", "raw": ""}
+    """Recipe + context pack -> call -> validate -> repair-retry once -> log.
+    Rate-limited: max 2 concurrent, exponential backoff on 429."""
+    async def _inner():
+        spec = JOB_MAP.get(job_type)
+        if spec is None:
+            return {"ok": False, "error": f"Unknown job '{job_type}' - add it to JOB_MAP", "raw": ""}
 
-    recipe = load_recipe(job_type, recipe_version)
-    model = _model_for(spec["tier"])
-    client = _client()
+        recipe = load_recipe(job_type, recipe_version)
+        model = _model_for(spec["tier"])
+        client = _client()
 
-    messages = [
-        {"role": "system", "content": recipe},
-        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-    ]
+        messages = [
+            {"role": "system", "content": recipe},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+        ]
 
-    start = time.time()
-    try:
-        raw, t_in, t_out = await _chat(client, model, spec["temp"], messages)
-    except Exception as e:
-        await _log_job(job_type, model, spec["temp"], context, "", None,
-                       None, None, 0, str(e), project_id, channel_id)
-        return {"ok": False, "error": f"LLM connection failed: {e}", "raw": ""}
+        start = time.time()
+        try:
+            raw, t_in, t_out = await _chat(client, model, spec["temp"], messages)
+        except Exception as e:
+            await _log_job(job_type, model, spec["temp"], context, "", None,
+                           None, None, 0, str(e), project_id, channel_id)
+            return {"ok": False, "error": f"LLM connection failed: {e}", "raw": ""}
 
-    parsed, error = _validate(raw, schema)
-
-    if error is not None:
-        # Repair-retry ONCE
-        messages.append({"role": "assistant", "content": raw})
-        messages.append({"role": "user", "content":
-                         f"Your output failed validation: {error}\nReturn ONLY corrected JSON."})
-        raw, t_in2, t_out2 = await _chat(client, model, spec["temp"], messages)
-        t_in = (t_in or 0) + (t_in2 or 0)
-        t_out = (t_out or 0) + (t_out2 or 0)
         parsed, error = _validate(raw, schema)
-        if error is not None:
-            await _log_job(job_type, model, spec["temp"], context, raw, None,
-                           t_in, t_out, int((time.time() - start) * 1000), error,
-                           project_id, channel_id)
-            return {"ok": False, "error": error, "raw": raw}
 
-    await _log_job(job_type, model, spec["temp"], context, raw, parsed,
-                   t_in, t_out, int((time.time() - start) * 1000), None,
-                   project_id, channel_id)
-    return {"ok": True, "parsed": parsed, "raw": raw}
+        if error is not None:
+            # Repair-retry ONCE
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content":
+                             f"Your output failed validation: {error}\nReturn ONLY corrected JSON."})
+            raw, t_in2, t_out2 = await _chat(client, model, spec["temp"], messages)
+            t_in = (t_in or 0) + (t_in2 or 0)
+            t_out = (t_out or 0) + (t_out2 or 0)
+            parsed, error = _validate(raw, schema)
+            if error is not None:
+                await _log_job(job_type, model, spec["temp"], context, raw, None,
+                               t_in, t_out, int((time.time() - start) * 1000), error,
+                               project_id, channel_id)
+                return {"ok": False, "error": error, "raw": raw}
+
+        await _log_job(job_type, model, spec["temp"], context, raw, parsed,
+                       t_in, t_out, int((time.time() - start) * 1000), None,
+                       project_id, channel_id)
+        return {"ok": True, "parsed": parsed, "raw": raw}
+
+    async with _SEMAPHORE:
+        return await _with_backoff(_inner())
 
 
 async def dispatch_stream(job_type: str, context: dict,
                           project_id=None, channel_id=None, recipe_version=1):
-    """Async generator yielding SSE frames for streamed jobs."""
-    spec = JOB_MAP.get(job_type)
-    if spec is None:
-        yield f"data: {json.dumps({'error': f'Unknown job {job_type}'})}\n\n"
+    """Async generator yielding SSE frames for streamed jobs. Rate-limited."""
+    async def _inner():
+        spec = JOB_MAP.get(job_type)
+        if spec is None:
+            yield f"data: {json.dumps({'error': f'Unknown job {job_type}'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        recipe = load_recipe(job_type, recipe_version)
+        model = _model_for(spec["tier"])
+        client = _client()
+
+        messages = [
+            {"role": "system", "content": recipe},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+        ]
+
+        start = time.time()
+        collected = []
+        try:
+            stream = await client.chat.completions.create(
+                model=model, messages=messages, temperature=spec["temp"], stream=True)
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    collected.append(delta)
+                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+        except Exception as e:
+            await _log_job(job_type, model, spec["temp"], context, "".join(collected),
+                           None, None, None, int((time.time() - start) * 1000),
+                           str(e), project_id, channel_id)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        raw = "".join(collected)
+        await _log_job(job_type, model, spec["temp"], context, raw, raw,
+                       None, None, int((time.time() - start) * 1000), None,
+                       project_id, channel_id)
         yield "data: [DONE]\n\n"
-        return
 
-    recipe = load_recipe(job_type, recipe_version)
-    model = _model_for(spec["tier"])
-    client = _client()
-
-    messages = [
-        {"role": "system", "content": recipe},
-        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-    ]
-
-    start = time.time()
-    collected = []
-    try:
-        stream = await client.chat.completions.create(
-            model=model, messages=messages, temperature=spec["temp"], stream=True)
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                collected.append(delta)
-                yield f"data: {json.dumps({'delta': delta})}\n\n"
-    except Exception as e:
-        await _log_job(job_type, model, spec["temp"], context, "".join(collected),
-                       None, None, None, int((time.time() - start) * 1000),
-                       str(e), project_id, channel_id)
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        yield "data: [DONE]\n\n"
-        return
-
-    raw = "".join(collected)
-    await _log_job(job_type, model, spec["temp"], context, raw, raw,
-                   None, None, int((time.time() - start) * 1000), None,
-                   project_id, channel_id)
-    yield "data: [DONE]\n\n"
+    async with _SEMAPHORE:
+        async for frame in _with_backoff(_inner()):
+            yield frame
 
 
 async def dispatch_vision(job_type, image_paths, context, schema=None,
                           project_id=None, channel_id=None):
-    """Vision job: recipe + images as base64. Free-text output (no JSON mode)."""
-    spec = JOB_MAP.get(job_type)
-    if spec is None:
-        return {"ok": False, "error": f"Unknown vision job '{job_type}' - add it to JOB_MAP", "raw": ""}
+    """Vision job: recipe + images as base64. Free-text output (no JSON mode). Rate-limited."""
+    async def _inner():
+        spec = JOB_MAP.get(job_type)
+        if spec is None:
+            return {"ok": False, "error": f"Unknown vision job '{job_type}' - add it to JOB_MAP", "raw": ""}
 
-    recipe = load_recipe(job_type)
-    model = _model_for(spec["tier"])
-    client = _client()
+        recipe = load_recipe(job_type)
+        model = _model_for(spec["tier"])
+        client = _client()
 
-    user_content = [{"type": "text", "text": json.dumps(context)}]
-    for p in image_paths:
-        with open(p, "rb") as fh:
-            b64 = base64.b64encode(fh.read()).decode()
-        ext = Path(p).suffix.lower().lstrip(".")
-        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-                "png": "image/png", "webp": "image/webp"}.get(ext, "image/png")
-        user_content.append({"type": "image_url",
-                             "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        user_content = [{"type": "text", "text": json.dumps(context)}]
+        for p in image_paths:
+            with open(p, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode()
+            ext = Path(p).suffix.lower().lstrip(".")
+            mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "png": "image/png", "webp": "image/webp"}.get(ext, "image/png")
+            user_content.append({"type": "image_url",
+                                 "image_url": {"url": f"data:{mime};base64,{b64}"}})
 
-    messages = [
-        {"role": "system", "content": recipe},
-        {"role": "user", "content": user_content},
-    ]
+        messages = [
+            {"role": "system", "content": recipe},
+            {"role": "user", "content": user_content},
+        ]
 
-    start = time.time()
-    try:
-        raw, t_in, t_out = await _chat(client, model, spec["temp"], messages, use_json=False)
-    except Exception as e:
-        await _log_job(job_type, model, spec["temp"], context, "", None,
-                       None, None, 0, str(e), project_id, channel_id)
-        return {"ok": False, "error": f"Vision call failed: {e}", "raw": ""}
+        start = time.time()
+        try:
+            raw, t_in, t_out = await _chat(client, model, spec["temp"], messages, use_json=False)
+        except Exception as e:
+            await _log_job(job_type, model, spec["temp"], context, "", None,
+                           None, None, 0, str(e), project_id, channel_id)
+            return {"ok": False, "error": f"Vision call failed: {e}", "raw": ""}
 
-    await _log_job(job_type, model, spec["temp"], context, raw, raw,
-                   t_in, t_out, int((time.time() - start) * 1000), None,
-                   project_id, channel_id)
-    return {"ok": True, "parsed": raw, "raw": raw}
+        await _log_job(job_type, model, spec["temp"], context, raw, raw,
+                       t_in, t_out, int((time.time() - start) * 1000), None,
+                       project_id, channel_id)
+        return {"ok": True, "parsed": raw, "raw": raw}
+
+    async with _SEMAPHORE:
+        return await _with_backoff(_inner())
