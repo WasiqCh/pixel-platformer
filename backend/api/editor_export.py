@@ -122,10 +122,12 @@ async def export_editor(project_id: str):
                             "file": pose_file.get((e["asset_ref"], b["id"]))} for e in mids],
             "inserts": [{"ref": e["asset_ref"], "file": master_file.get(e["asset_ref"])} for e in ins],
             "overlay": overlay,
+            "voice": f"08_export/voiceover/{b['id']}.wav",
         })
 
     manifest = {"project": project_id, "fps": FPS, "total_sec": round(cursor / FPS, 2),
-                "built_at": _now(), "beats": manifest_beats, "missing": sorted(set(missing))}
+                "built_at": _now(), "beats": manifest_beats, "missing": sorted(set(missing)),
+                "voiceover_dir": "08_export/voiceover"}
 
     out_dir = base / "08_export"
     out_dir.mkdir(parents=True, exist_ok=True)

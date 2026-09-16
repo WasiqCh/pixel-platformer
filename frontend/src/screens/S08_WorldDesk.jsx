@@ -22,6 +22,7 @@ export default function S08_WorldDesk({ currentProject }) {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
+  const [memeOn, setMemeOn] = useState(true);
 
   const refresh = () => {
     if (currentProject)
@@ -35,6 +36,12 @@ export default function S08_WorldDesk({ currentProject }) {
   };
   useEffect(refresh, [currentProject]);
 
+  useEffect(() => {
+    if (currentProject)
+      fetch(`/api/v1/channels/${currentProject.channel_id}/policy`)
+        .then(r => r.json()).then(d => setMemeOn(!!d.meme_mode)).catch(() => {});
+  }, [currentProject]);
+
   const scan = async () => {
     setLoading(true);
     try {
@@ -44,6 +51,13 @@ export default function S08_WorldDesk({ currentProject }) {
       else { alert(`Success! Added: ${data.added}, Updated: ${data.updated}`); refresh(); }
     } catch (e) { alert('Network error: ' + e.message); }
     setLoading(false);
+  };
+
+  const toggleMeme = async () => {
+    const res = await fetch(`/api/v1/channels/${currentProject.channel_id}/policy`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ meme_mode: !memeOn }) });
+    if (res.ok) { setMemeOn(!memeOn); refresh(); }
   };
 
   const setStatus = async (recId, status) => {
@@ -200,11 +214,16 @@ export default function S08_WorldDesk({ currentProject }) {
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-2">
         <h2 className="font-display text-2xl text-ink">World Desk (P12)</h2>
-        <BlockButton onClick={scan} disabled={loading}>
-          {loading ? 'Scanning...' : '🔍 Re-Scan World'}
-        </BlockButton>
+        <div className="flex gap-2 flex-wrap">
+          <BlockButton variant="secondary" onClick={toggleMeme}>
+            🎭 Meme mode: {memeOn ? 'ON' : 'OFF'}
+          </BlockButton>
+          <BlockButton onClick={scan} disabled={loading}>
+            {loading ? 'Scanning...' : '🔍 Re-Scan World'}
+          </BlockButton>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4">

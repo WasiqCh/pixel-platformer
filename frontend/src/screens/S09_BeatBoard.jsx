@@ -29,6 +29,9 @@ export default function S09_BeatBoard({ currentProject }) {
   const [manifest, setManifest] = useState(null);
   const [noteOpen, setNoteOpen] = useState(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [voRunning, setVoRunning] = useState(false);
+  const [voDone, setVoDone] = useState(0);
+  const [voTotal, setVoTotal] = useState(0);
 
   const refresh = () => {
     if (currentProject)
@@ -67,6 +70,24 @@ export default function S09_BeatBoard({ currentProject }) {
       const el = document.getElementById(`beat-${beatId}`);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 50);
+  };
+
+  const startVoice = async () => {
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/voiceover/build`, { method: 'POST' });
+    const d = await safeJson(res);
+    if (!res.ok) { alert('Voiceover failed:\n\n' + (d.detail || 'Unknown error')); return; }
+    setVoRunning(true);
+    const t = setInterval(async () => {
+      const r = await fetch(`/api/v1/projects/${currentProject.id}/voiceover/status`);
+      const s = await r.json();
+      setVoDone(s.done); setVoTotal(s.total);
+      if (!s.running) {
+        clearInterval(t);
+        setVoRunning(false);
+        alert(`Voiceover done: ${s.total} beats retimed to REAL speech.\nWAV files saved in 08_export/voiceover/`);
+        refresh();
+      }
+    }, 3000);
   };
 
   const composeAll = async () => {
@@ -168,6 +189,9 @@ export default function S09_BeatBoard({ currentProject }) {
       <div className="flex justify-between items-center flex-wrap gap-2">
         <h2 className="font-display text-2xl text-ink">Beat Board (P13)</h2>
         <div className="flex gap-2 flex-wrap">
+          <BlockButton variant="secondary" onClick={startVoice} disabled={voRunning}>
+            {voRunning ? `🎙️ ${voDone}/${voTotal}…` : '🎙️ Narrate & Retime'}
+          </BlockButton>
           <BlockButton variant="secondary" onClick={composeAll}>🧩 Compose Prompts</BlockButton>
           <BlockButton variant="secondary" onClick={exportPack}>📤 Export Pack</BlockButton>
           <BlockButton onClick={extract} disabled={loading}>
@@ -235,6 +259,7 @@ export default function S09_BeatBoard({ currentProject }) {
                       <p className="font-body text-sm text-ink mb-1">"{clean(b.text)}"</p>
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <span className="font-mono text-ink/60">{b.duration_sec.toFixed(1)}s</span>
+                        <span className="font-mono text-ink/50">{b.word_count}w</span>
                         {b.duration_sec < 3.5 && (
                           <span className="font-bold bg-danger/10 border border-danger text-danger px-2 py-0.5 rounded"
                             title="Very short cut — consider merging with the neighbour beat">⚡ FLASH</span>

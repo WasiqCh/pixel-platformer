@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS channel_library (
     source_project TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+-- voice settings (single row)
+CREATE TABLE IF NOT EXISTS voice_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    voice TEXT NOT NULL DEFAULT 'Kore',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+
+-- channel policy (meme mode)
+CREATE TABLE IF NOT EXISTS channel_policy (
+    channel_id TEXT PRIMARY KEY,
+    meme_mode INTEGER NOT NULL DEFAULT 1
+);
 """
 
 PROJECT_SCHEMA = """

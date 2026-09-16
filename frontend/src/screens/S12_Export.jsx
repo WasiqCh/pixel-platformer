@@ -18,7 +18,7 @@ export default function S12_Export({ currentProject }) {
       const res = await fetch(`/api/v1/projects/${currentProject.id}/export/editor`, { method: 'POST' });
       const data = await safeJson(res);
       if (!res.ok) alert('Editor export failed:\n\n' + (data.detail || 'Unknown error'));
-      else alert(`EDITOR TIMELINE EXPORTED\n\n${data.clips} clips · ${data.stickers} stickers · ${data.total_sec}s\nmissing assets: ${data.missing}\n\nFiles:\n${data.files.join('\n')}`);
+      else alert(`EDITOR TIMELINE EXPORTED\n\n${data.clips} clips · ${data.stickers} stickers · ${data.total_sec}s\nmissing assets: ${data.missing}\nvoiceover WAVs: 08_export/voiceover/\n\nFiles:\n${data.files.join('\n')}`);
     } catch (e) { alert('Network error: ' + e.message); }
     setExporting(false);
   };

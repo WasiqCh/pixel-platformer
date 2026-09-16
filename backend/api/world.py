@@ -19,11 +19,53 @@ router = APIRouter(tags=["world"])
 class StatusUpdate(BaseModel):
     status: str  # pending | approved | dismissed
 
+class PolicyUpdate(BaseModel):
+    meme_mode: bool
+
 class WorldEdit(BaseModel):
     search_query: Optional[str] = None
     era_hint: Optional[str] = None
     usage_intent: Optional[str] = None
     map_template: Optional[str] = None
+
+
+async def _meme_on(channel_id: str) -> bool:
+    db = await get_app_db()
+    async with db.execute("SELECT meme_mode FROM channel_policy WHERE channel_id=?", (channel_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await db.execute("INSERT INTO channel_policy (channel_id, meme_mode) VALUES (?,1)", (channel_id,))
+        await db.commit()
+        await db.close()
+        return True
+    await db.close()
+    return bool(row["meme_mode"])
+
+
+@router.get("/channels/{channel_id}/policy")
+async def get_policy(channel_id: str):
+    return {"meme_mode": await _meme_on(channel_id)}
+
+
+@router.put("/channels/{channel_id}/policy")
+async def put_policy(channel_id: str, data: PolicyUpdate):
+    await _meme_on(channel_id)
+    db = await get_app_db()
+    await db.execute("UPDATE channel_policy SET meme_mode=? WHERE channel_id=?",
+                     (1 if data.meme_mode else 0, channel_id))
+    async with db.execute("SELECT id, folder_name FROM projects WHERE channel_id=?", (channel_id,)) as cur:
+        prows = [dict(r) for r in await cur.fetchall()]
+    await db.commit()
+    await db.close()
+    for p in prows:
+        pdb = await get_project_db(p["folder_name"])
+        if data.meme_mode:
+            await pdb.execute("UPDATE world_records SET stale=0 WHERE project_id=? AND type='meme'", (p["id"],))
+        else:
+            await pdb.execute("UPDATE world_records SET stale=1 WHERE project_id=? AND type='meme'", (p["id"],))
+        await pdb.commit()
+        await pdb.close()
+    return {"meme_mode": bool(data.meme_mode)}
 
 
 def _now():
@@ -138,6 +180,9 @@ async def scan_world(project_id: str):
             staled += 1
 
     await proj_db.commit()
+
+    if not await _meme_on(ch_id):
+        await proj_db.execute("UPDATE world_records SET stale=1 WHERE project_id=? AND type='meme'", (project_id,))
 
     async with proj_db.execute(
         "SELECT * FROM world_records WHERE project_id=? AND stale=0 ORDER BY type, id", (project_id,)) as cur:
