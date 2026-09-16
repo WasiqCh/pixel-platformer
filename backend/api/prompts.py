@@ -12,6 +12,20 @@ from backend.core.composer import (clean_text, classify_overlay, pacing_flags, p
 from backend.db.connection import get_app_db, get_project_db
 from backend.storage.fs_manager import get_project_dir
 
+# Match sheets.py constants
+CHAR_ACTIONS_PER_SHEET = 6
+CHAR_CELLS = [
+    "wide full-body neutral stance",
+    "medium front three-quarter view",
+    "medium profile walking",
+    "close-up face neutral",
+    "close-up face determined",
+    "close-up face angry or afraid",
+    "signature action pose",
+    "holding signature props",
+    "pure silhouette",
+]
+
 router = APIRouter(tags=["prompts"])
 
 
@@ -72,7 +86,6 @@ async def _compose_all(project_id, update_db, write):
                 await proj_db.execute("UPDATE beats SET overlay_text=?, overlay_spec=? WHERE id=?",
                                       (b["overlay_text"], b["overlay_spec"], b["id"]))
 
-
     def ref_info(ref):
         st, fp = lib.get(ref, ("", ""))
         return (fp if st == "ready" else "")
@@ -87,6 +100,13 @@ async def _compose_all(project_id, update_db, write):
             return f"06_assets/environments/{ref}_sheet.md"
         return "master generation pending"
 
+    # Environment sheet numbers (one per environment, ordered by id)
+    env_sheet_num = {ref: i + 1 for i, ref in enumerate(sorted(envs.keys()))}
+
+    # Character action counters: track how many poses generated per character
+    # to assign sheet.action numbers (1.1, 1.2... 2.1, 2.2...)
+    char_action_counter = {cid: 0 for cid in chars}
+
     # master prompts per static asset
     masters = {}
     def master_for(ref):
@@ -94,7 +114,10 @@ async def _compose_all(project_id, update_db, write):
             return masters[ref]
         if ref.startswith("E"):
             e = envs.get(ref)
-            p = master_prompt_env(descriptor, e["name"], e["elements"], e["green_conflict"]) if e else f"{descriptor} Environment plate."
+            # Include environment sheet number
+            env_num = env_sheet_num.get(ref, 1)
+            base = master_prompt_env(descriptor, e["name"], e["elements"], e["green_conflict"]) if e else f"{descriptor} Environment plate."
+            p = f"{base} [E{env_num}]"
         elif ref.startswith("MT"):
             w = worlds.get(ref, {})
             p = master_prompt_map(descriptor, w.get("text", ref), w.get("map_template"), w.get("era_hint"))
@@ -170,7 +193,24 @@ async def _compose_all(project_id, update_db, write):
                 var = variant_for(ch["variants"], b["text"], b["chunk_text"]) if ch else None
                 identity = (var["delta"] if var else (ch["appearance"] if ch else "as described in script"))
                 snip = " ".join(b["text"].split()[:12])
-                prompt = pose_prompt(descriptor, name, identity, b["svo"], snip, el["framing"], diegetic, director)
+                
+                # Increment action counter for this character
+                char_action_counter[ref] += 1
+                action_idx = char_action_counter[ref]
+                sheet_num = ((action_idx - 1) // CHAR_ACTIONS_PER_SHEET) + 1
+                action_num = ((action_idx - 1) % CHAR_ACTIONS_PER_SHEET) + 1
+                sheet_action = f"{sheet_num}.{action_num}"
+                
+                # Get environment sheet number for this beat (first background)
+                env_num = ""
+                if bgs:
+                    env_num = f"E{env_sheet_num.get(bgs[0]['asset_ref'], 1)}"
+                
+                # Build prompt with sheet/action numbering
+                base_prompt = pose_prompt(descriptor, name, identity, b["svo"], snip, el["framing"], diegetic, director)
+                tag = f" [E{env_sheet_num.get(bgs[0]['asset_ref'], 1) if bgs else 1}, C{sheet_action}]"
+                prompt = base_prompt + tag
+                
                 pose_seq += 1
                 generations.append({"gen_id": f"P{pose_seq:02d}", "kind": "pose", "asset_ref": ref,
                                     "beat_id": b["id"], "title": f"{b['id']}/{ref}", "prompt": prompt,

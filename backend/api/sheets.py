@@ -1,11 +1,15 @@
 # backend/api/sheets.py
 from fastapi import APIRouter, HTTPException
 import json
+import math
 
 from backend.db.connection import get_app_db, get_project_db
 from backend.storage.fs_manager import get_project_dir
 
 router = APIRouter(tags=["sheets"])
+
+# Character: 6 actions per sheet max
+CHAR_ACTIONS_PER_SHEET = 6
 
 CHAR_CELLS = [
     "wide full-body neutral stance",
@@ -51,12 +55,29 @@ async def _get_descriptor(ch_id: str) -> str:
     return "clean flat 2D animation, bold outlines, limited palette"
 
 
-def _char_grid_prompt(descriptor: str, name: str, appearance: str) -> str:
-    cells = "; ".join(f"[{i + 1}] {c}" for i, c in enumerate(CHAR_CELLS))
+def _char_grid_prompt(descriptor: str, name: str, appearance: str, sheet_num: int, actions: list, total_sheets: int) -> str:
+    cells = "; ".join(f"[{i + 1}] {c}" for i, c in enumerate(actions))
     desc = descriptor.rstrip(". ")
-    return (f"{desc}. 3x3 character grid sheet of {name}: {appearance}. "
-            f"Nine panels, same character, identical design in every panel. {cells}. "
-            f"Consistent line weight and palette across all panels.")
+    sheet_label = f"Sheet {sheet_num} of {total_sheets}"
+    action_labels = ", ".join(f"{sheet_num}.{i+1}" for i in range(len(actions)))
+    return (f"{desc}. {sheet_label} — {name}: {appearance}. "
+            f"Actions on this sheet: {action_labels}. "
+            f"Grid: {len(actions)} panels, same character, identical design in every panel. {cells}. "
+            f"Consistent line weight and palette across all panels. "
+            f"Label each panel with its action number ({action_labels}).")
+
+
+def _char_sheet_prompts(descriptor: str, name: str, appearance: str) -> list[tuple[int, list, str]]:
+    """Split character actions into sheets of 6, return [(sheet_num, actions_list, prompt)]"""
+    all_actions = CHAR_CELLS[:]
+    sheets = []
+    for i in range(0, len(all_actions), CHAR_ACTIONS_PER_SHEET):
+        sheet_actions = all_actions[i:i + CHAR_ACTIONS_PER_SHEET]
+        sheet_num = (i // CHAR_ACTIONS_PER_SHEET) + 1
+        total_sheets = math.ceil(len(all_actions) / CHAR_ACTIONS_PER_SHEET)
+        prompt = _char_grid_prompt(descriptor, name, appearance, sheet_num, sheet_actions, total_sheets)
+        sheets.append((sheet_num, sheet_actions, prompt))
+    return sheets
 
 
 def _env_grid_prompt(descriptor: str, name: str, elements: str, green: bool) -> str:
@@ -64,9 +85,10 @@ def _env_grid_prompt(descriptor: str, name: str, elements: str, green: bool) -> 
     desc = descriptor.rstrip(". ")
     extra = (" AVOID chroma green as a dominant tone; use a painted-sky alternative palette."
              if green else "")
-    return (f"{desc}. 3x3 environment grid sheet of {name}: {elements}. "
-            f"Nine panels of the SAME location at different times and angles. {cells}.{extra} "
-            f"Consistent architecture and palette across all panels.")
+    return (f"{desc}. Environment sheet for {name}: {elements}. "
+            f"One location, multiple variations. {cells}.{extra} "
+            f"Consistent architecture and palette across all panels. "
+            f"Label each panel with variation name.")
 
 
 @router.post("/projects/{project_id}/sheets/generate")
@@ -99,7 +121,7 @@ async def generate_sheets(project_id: str):
 
     for c in chars:
         name = c["names"][0]
-        lines = [
+        base_lines = [
             f"# {c['id']} — {name} ({c['kind']} · {c['significance']} · {c['render']})",
             f"STYLE KIT: {descriptor}",
             f"BEAT PRESENCE: {beat_counts.get(c['id'], 0)} beats",
@@ -109,15 +131,23 @@ async def generate_sheets(project_id: str):
             "",
         ]
         if c["variants"]:
-            lines.append("## Variants")
+            base_lines.append("## Variants")
             for v in c["variants"]:
-                lines.append(f"- {v['id']} [{v['span']}]: {v['delta']}")
+                base_lines.append(f"- {v['id']} [{v['span']}]: {v['delta']}")
+            base_lines.append("")
+        base_lines.append(f"## Green conflict: {'YES — plan non-green palette' if c['green_conflict'] else 'no'}")
+        base_lines.append("")
+
+        char_sheets = _char_sheet_prompts(descriptor, name, c["appearance"] or "as described above")
+        for sheet_num, actions, prompt in char_sheets:
+            lines = base_lines[:]
+            lines.append(f"## Character Sheet {sheet_num} ({len(actions)} actions)")
+            lines.append(f"Actions: {', '.join(f'{sheet_num}.{i+1}' for i in range(len(actions)))}")
             lines.append("")
-        lines.append(f"## Green conflict: {'YES — plan non-green palette' if c['green_conflict'] else 'no'}")
-        lines.append("")
-        lines.append("## 3x3 grid prompt")
-        lines.append(_char_grid_prompt(descriptor, name, c["appearance"] or "as described above"))
-        (assets_dir / "characters" / f"{c['id']}_sheet.md").write_text("\n".join(lines), encoding="utf-8")
+            lines.append("## Grid prompt")
+            lines.append(prompt)
+            sheet_id = f"{c['id']}_S{sheet_num}"
+            (assets_dir / "characters" / f"{sheet_id}_sheet.md").write_text("\n".join(lines), encoding="utf-8")
 
     for e in envs:
         elements_txt = "; ".join(e["elements"]) or "as described in script"
@@ -137,11 +167,12 @@ async def generate_sheets(project_id: str):
             lines.append("")
         lines.append(f"## Green conflict: {'YES — plan non-green palette' if e['green_conflict'] else 'no'}")
         lines.append("")
-        lines.append("## 3x3 grid prompt")
+        lines.append("## Grid prompt")
         lines.append(_env_grid_prompt(descriptor, e["name"], elements_txt, bool(e["green_conflict"])))
         (assets_dir / "environments" / f"{e['id']}_sheet.md").write_text("\n".join(lines), encoding="utf-8")
 
-    return {"characters": len(chars), "environments": len(envs)}
+    total_char_sheets = sum(math.ceil(len(CHAR_CELLS) / CHAR_ACTIONS_PER_SHEET) for _ in chars)
+    return {"characters": len(chars), "character_sheets": total_char_sheets, "environments": len(envs)}
 
 
 @router.get("/projects/{project_id}/sheets")
