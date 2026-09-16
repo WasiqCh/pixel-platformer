@@ -125,6 +125,9 @@ async def _generate_row(project_id, folder, ch_id, gen_id):
     await proj_db.execute("UPDATE generations SET status='ready', file_path=?, error='', updated_at=? WHERE id=?", (rel, _now(), gen_id))
     if row["kind"] == "master":
         await proj_db.execute("UPDATE library SET file_path=?, status='ready', source='generated', updated_at=? WHERE asset_ref=? AND project_id=?", (rel, _now(), row["asset_ref"], project_id))
+        from backend.core.vault import vault_put, asset_key
+        vkind = "character" if row["asset_ref"].startswith("C") else ("environment" if row["asset_ref"].startswith("E") else "world")
+        await vault_put(ch_id, asset_key(row["title"]), vkind, row["title"], dest, project_id)
     await proj_db.commit(); await proj_db.close()
     return {"gen_id": gen_id, "status": "ready", "file_path": rel}
 

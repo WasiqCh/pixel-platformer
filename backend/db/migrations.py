@@ -63,6 +63,18 @@ CREATE TABLE IF NOT EXISTS image_settings (
     model TEXT NOT NULL DEFAULT 'gemini-2.5-flash-image',
     updated_at TEXT NOT NULL DEFAULT ''
 );
+
+-- channel vault (cross-episode asset reuse)
+CREATE TABLE IF NOT EXISTS channel_library (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    asset_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    source_project TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 PROJECT_SCHEMA = """

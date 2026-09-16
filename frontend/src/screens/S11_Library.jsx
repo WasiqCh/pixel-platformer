@@ -18,6 +18,10 @@ export default function S11_Library({ currentProject }) {
   const [showCfg, setShowCfg] = useState(false);
   const [cfg, setCfg] = useState({ provider: 'manual', model: 'gemini-2.5-flash-image', api_key: '' });
   const [keyDraft, setKeyDraft] = useState('');
+  const [autoFor, setAutoFor] = useState(null);
+  const [autoResults, setAutoResults] = useState([]);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [vaultCount, setVaultCount] = useState(0);
 
   const refresh = () => {
     if (currentProject)
@@ -42,6 +46,12 @@ export default function S11_Library({ currentProject }) {
   useEffect(() => {
     fetch('/api/v1/settings/image').then(r => r.json()).then(setCfg).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (currentProject)
+      fetch(`/api/v1/channels/${currentProject.channel_id}/vault`)
+        .then(r => r.json()).then(d => setVaultCount((d || []).length)).catch(() => {});
+  }, [currentProject]);
 
   const saveCfg = async () => {
     const body = { provider: cfg.provider, model: cfg.model };
@@ -78,7 +88,7 @@ export default function S11_Library({ currentProject }) {
       const res = await fetch(`/api/v1/projects/${currentProject.id}/library/scaffold`, { method: 'POST' });
       const data = await safeJson(res);
       if (!res.ok) alert('Scaffold failed:\n\n' + (data.detail || 'Unknown error'));
-      else { alert(`Library scaffolded: ${data.created} new slots.`); refresh(); }
+      else { alert(`Library scaffolded: ${data.created} new slots (${data.reused || 0} reused from channel vault).`); refresh(); }
     } catch (e) { alert('Network error: ' + e.message); }
     setLoading(false);
   };
@@ -105,6 +115,45 @@ export default function S11_Library({ currentProject }) {
     const q = (it.search_query || it.title) + ' ' + (it.era_hint || '');
     window.open('https://www.google.com/search?q=' + encodeURIComponent(q.trim()) + '&tbm=isch', '_blank');
   };
+
+  const autoSearch = async (it) => {
+    if (autoFor === it.id) { setAutoFor(null); return; }
+    setAutoFor(it.id); setAutoResults([]); setAutoLoading(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/world/${it.asset_ref}/autosearch`);
+      const d = await safeJson(res);
+      if (!res.ok) alert('Auto-search failed: ' + (d.detail || 'Unknown'));
+      else setAutoResults(d.results || []);
+    } catch (e) { alert('Network error: ' + e.message); }
+    setAutoLoading(false);
+  };
+
+  const pickAuto = async (c) => {
+    if (!confirm(`Download this image into the slot?\nLicense: ${c.license}\nAuthor: ${c.author || 'unknown'}\nSource: ${c.source_url}`)) return;
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/library/${autoFor}/download`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: c.file_url, source_url: c.source_url, license: c.license, author: c.author }) });
+    const d = await safeJson(res);
+    if (!res.ok) alert('Download failed: ' + (d.detail || 'Unknown'));
+    else { setAutoFor(null); refresh(); }
+  };
+
+  const autoPanel = () => (
+    <div className="mt-1 p-2 border-2 border-info/40 bg-info/10 rounded">
+      {autoLoading ? <p className="text-xs font-body">Searching Wikimedia Commons (free licenses only)…</p> :
+        autoResults.length === 0 ? <p className="text-xs font-body">No free-license results — use 🔎 manual search instead.</p> :
+        <div className="grid grid-cols-4 gap-2">
+          {autoResults.map((c, i) => (
+            <button key={i} onClick={() => pickAuto(c)}
+              className="text-left bg-white border-2 border-ink/30 rounded p-1 hover:border-info">
+              <img src={c.thumb} alt={c.title} className="w-full h-20 object-cover rounded" />
+              <p className="text-[10px] font-bold truncate">{c.license}</p>
+              <p className="text-[10px] text-ink/60 truncate">{c.author || 'unknown author'}</p>
+            </button>
+          ))}
+        </div>}
+    </div>
+  );
 
   const remove = async (libId) => {
     if (!confirm('Delete this library slot?')) return;
@@ -141,8 +190,12 @@ export default function S11_Library({ currentProject }) {
         it.status === 'ready' ? 'border-success text-success bg-success/20' : 'border-ink/30 text-ink/50'}`}>
         {it.status === 'ready' ? 'READY' : 'EMPTY'}
       </span>
+      {it.source === 'channel' && <span className="text-xs font-bold text-info" title="Reused from channel vault">🌐</span>}
       {it.kind === 'world' && (
         <BlockButton variant="secondary" onClick={() => openSearch(it)} title="Open image search">🔎</BlockButton>
+      )}
+      {it.kind === 'world' && (
+        <BlockButton variant="secondary" onClick={() => autoSearch(it)} title="Auto-search free-license images">✨</BlockButton>
       )}
       <BlockButton variant="secondary" onClick={() => pickFile(it.id)}>📤</BlockButton>
       <button onClick={() => remove(it.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
@@ -165,6 +218,7 @@ export default function S11_Library({ currentProject }) {
           <div className="flex justify-between text-xs font-heading font-bold mb-1">
             <span>PRODUCTION READINESS</span>
             <span>{ready} / {items.length} assets ready ({pct}%)</span>
+            <span>🌐 vault: {vaultCount} reusable</span>
           </div>
           <div className="h-4 border-2 border-ink rounded overflow-hidden bg-white">
             <div className="h-full bg-success transition-all" style={{ width: `${pct}%` }} />
@@ -186,7 +240,14 @@ export default function S11_Library({ currentProject }) {
           </Card>
           <div className="md:col-span-2">
             <Card title={`World / Real Assets (${worlds.length}) — 🔎 opens the exact image search`}>
-              <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">{worlds.map(row)}</div>
+              <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+                {worlds.map(w => (
+                  <div key={w.id}>
+                    {row(w)}
+                    {autoFor === w.id && autoPanel()}
+                  </div>
+                ))}
+              </div>
             </Card>
           </div>
         </div>

@@ -43,6 +43,10 @@ async def scaffold_library(project_id: str):
     proj_db = await get_project_db(folder)
     now = _now()
     created = 0
+    reused = 0
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    from pathlib import Path
+    from backend.core.vault import vault_get, vault_dir, asset_key
 
     async with proj_db.execute("SELECT id, names FROM characters WHERE project_id=? AND stale=0 ORDER BY id", (project_id,)) as cur:
         chars = [(r["id"], json.loads(r["names"])[0]) for r in await cur.fetchall()]
@@ -69,11 +73,22 @@ async def scaffold_library(project_id: str):
         elif kind == "environment":
             await proj_db.execute("UPDATE environments SET library_ref=? WHERE id=?", (lib_id, ref))
         # world link lives on library.asset_ref (world_records has no library_ref column)
+
+        vrow = await vault_get(ch_id, asset_key(title))
+        if vrow:
+            vfile = vault_dir(ch_id) / Path(vrow["file_path"]).name
+            if vfile.exists():
+                relv = f"06_assets/library/{lib_id}_vault{vfile.suffix}"
+                (base / relv).parent.mkdir(parents=True, exist_ok=True)
+                (base / relv).write_bytes(vfile.read_bytes())
+                await proj_db.execute("UPDATE library SET file_path=?, status='ready', source='channel', updated_at=? WHERE id=?",
+                                      (relv, now, lib_id))
+                reused += 1
         created += 1
 
     await proj_db.commit()
     await proj_db.close()
-    return {"created": created}
+    return {"created": created, "reused": reused}
 
 
 @router.get("/projects/{project_id}/library")
@@ -114,6 +129,8 @@ async def upload_asset(project_id: str, lib_id: str, file: UploadFile = File(...
         await proj_db.execute(
             "UPDATE world_records SET provenance=?, updated_at=? WHERE id=?",
             (rel, _now(), row["asset_ref"]))
+    from backend.core.vault import vault_put, asset_key
+    await vault_put(ch_id, asset_key(row["title"]), row["kind"], row["title"], lib_dir / safe_name, project_id)
     await proj_db.commit()
     await proj_db.close()
     return {"status": "ready", "file_path": rel}
@@ -143,3 +160,12 @@ async def delete_library(project_id: str, lib_id: str):
     await proj_db.commit()
     await proj_db.close()
     return {"status": "deleted"}
+
+
+@router.get("/channels/{channel_id}/vault")
+async def list_vault(channel_id: str):
+    db = await get_app_db()
+    async with db.execute("SELECT * FROM channel_library WHERE channel_id=? ORDER BY kind, title", (channel_id,)) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    await db.close()
+    return rows
