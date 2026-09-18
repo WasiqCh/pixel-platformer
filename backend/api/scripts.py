@@ -346,7 +346,15 @@ async def auto_section(project_id: str, req: AutoSectionRequest):
         for s in result["parsed"]["sections"]:
             wc = len(s["chunk_text"].split())
             sections.append({"heading": s["heading"], "summary": s["summary"], "role": s["role"], "target_words": wc})
-            parts.append(f"## {s['heading']}\n{s['chunk_text'].strip()}")
+            body = (s["chunk_text"] or "").strip()
+            # Models usually echo a heading as the first line of the chunk, and it
+            # often isn't worded identically to `heading`. Since we re-prefix with
+            # our own heading below, drop any leading markdown heading line, or the
+            # rebuilt script ends up with "## H" twice in a row.
+            first, sep, rest = body.partition("\n")
+            if first.startswith("#"):
+                body = rest.strip() if sep else ""
+            parts.append(f"## {s['heading']}\n{body}")
         rebuilt = "\n\n".join(parts)
 
         proj_db = await get_project_db(folder)

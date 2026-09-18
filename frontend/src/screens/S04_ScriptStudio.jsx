@@ -5,13 +5,14 @@ import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
 import SliderWithBadge from '../components/SliderWithBadge';
 import useStream from '../hooks/useStream';
+import { playSfx } from '../lib/sfx';
 
 const safeJson = async (res) => {
   const t = await res.text();
   try { return JSON.parse(t); } catch { return { detail: t.slice(0, 200) || `HTTP ${res.status}` }; }
 };
 
-export default function S04_ScriptStudio({ currentProject }) {
+export default function S04_ScriptStudio({ currentProject, onNavigate }) {
   const [targetWords, setTargetWords] = useState(1500);
   const [outline, setOutline] = useState(null);
   const [outlineEditing, setOutlineEditing] = useState(false);
@@ -24,6 +25,7 @@ export default function S04_ScriptStudio({ currentProject }) {
   const [importText, setImportText] = useState('');
   const [fileName, setFileName] = useState('');
   const [importing, setImporting] = useState(false);
+  const [sectioning, setSectioning] = useState(false);
 
   const [punchHeading, setPunchHeading] = useState('');
   const [punchNote, setPunchNote] = useState('');
@@ -120,6 +122,25 @@ export default function S04_ScriptStudio({ currentProject }) {
       setScriptText(data.text); setScriptSource('imported'); setLocked(false); setImportText('');
     } catch (e) { alert('Network error: ' + e.message); }
     setImporting(false);
+  };
+
+  // Turns an already-written script into a structured outline so the rest of the
+  // pipeline has something to work from, without going through Idea/Title first.
+  const autoSection = async () => {
+    setSectioning(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/script/auto-section`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ script_text: scriptText || importText })
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { alert('Auto-section failed: ' + (data.detail || 'Unknown error')); return; }
+      // Only the outline is taken from this call - rebuilt_text can differ from the
+      // user's own script, and their version is the one that should be locked.
+      setOutline({ sections: data.outline.sections, target_words: data.outline.sections.reduce((n, s) => n + (s.target_words || 0), 0) });
+      setOutlineEditing(false);
+    } catch (e) { alert('Network error: ' + e.message); }
+    setSectioning(false);
   };
 
   const generateOutline = async () => {
@@ -324,6 +345,20 @@ export default function S04_ScriptStudio({ currentProject }) {
               <p>Imported scripts get <b>every tool</b>: punch-up, sanity check, duration math, lock & versions.</p>
               <p className="text-xs">Just type <code className="bg-panel px-1 rounded">## Heading</code> in the editor to create sections for the tools below.</p>
             </div>
+          </div>
+        </Card>
+      )}
+
+      {scriptSource === 'imported' && !outline && scriptText && (
+        <Card title="Build the outline from your script">
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-body text-sm text-ink/70">
+              Your imported script has no sections yet. Auto-sectioning finds the beats and
+              headings so the cast, world and beat stages have structure to read.
+            </p>
+            <BlockButton variant="secondary" onClick={autoSection} disabled={sectioning}>
+              {sectioning ? 'Detecting…' : 'Detect sections'}
+            </BlockButton>
           </div>
         </Card>
       )}
@@ -571,6 +606,16 @@ export default function S04_ScriptStudio({ currentProject }) {
               {locked ? '🔒 Lock New Version' : '🔒 Lock Script'}
             </BlockButton>
           </div>
+          {locked && onNavigate && (
+            <div className="mt-3 pt-3 border-t-2 border-ink/10 flex items-center justify-between gap-4">
+              <p className="font-body text-sm text-ink/70">
+                Script is locked. Skip ahead — Cast &amp; World reads the locked script directly.
+              </p>
+              <BlockButton variant="secondary" onClick={() => { playSfx('pop'); onNavigate('cast'); }}>
+                Skip to Cast &amp; World →
+              </BlockButton>
+            </div>
+          )}
         </Card>
       )}
     </div>

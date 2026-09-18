@@ -17,6 +17,7 @@ import S12_Export from './screens/S12_Export'
 import S13_Checkpoint from './screens/S13_Checkpoint'
 import S14_Handoff from './screens/S14_Handoff'
 import S17_Settings from './screens/S17_Settings'
+import S18_Prompts from './screens/S18_Prompts'
 import { setSfxEnabled } from './lib/sfx'
 
 function App() {
@@ -25,7 +26,7 @@ function App() {
   const [currentChannel, setCurrentChannel] = useState(null)
   const [currentProject, setCurrentProject] = useState(null)
 
-  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'export', 'checkpoint', 'handoff', 'settings']
+  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'export', 'checkpoint', 'handoff', 'settings', 'prompts']
 
   useEffect(() => {
     fetch('/api/v1/settings')
@@ -81,7 +82,7 @@ function App() {
             )}
 
             {activeNode === 'script' && (
-              <S04_ScriptStudio currentProject={currentProject} />
+              <S04_ScriptStudio currentProject={currentProject} onNavigate={setActiveNode} />
             )}
 
             {activeNode === 'cast' && (
@@ -125,6 +126,8 @@ function App() {
             )}
 
             {activeNode === 'settings' && <S17_Settings />}
+
+            {activeNode === 'prompts' && <S18_Prompts />}
 
             {!routed.includes(activeNode) && (
               <div className="card max-w-2xl mx-auto mt-12 text-center">

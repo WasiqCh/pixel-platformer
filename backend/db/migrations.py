@@ -240,6 +240,9 @@ CREATE TABLE IF NOT EXISTS generations (
 
 async def init_app_db(db_conn):
     await db_conn.executescript(APP_SCHEMA)
+    # 1 when this row was produced by tier auto-escalation after the cheap
+    # model failed validation twice (see llm_client.dispatch).
+    await _ensure_column(db_conn, "job_log", "escalated", "INTEGER NOT NULL DEFAULT 0")
     await db_conn.commit()
 
 async def _ensure_column(db_conn, table: str, column: str, ddl: str):

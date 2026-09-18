@@ -16,6 +16,7 @@ const nodes = [
   { id: 'beats', label: 'Beats', icon: '🎬' },
   { id: 'handoff', label: 'Handoff', icon: '🚀' },
   { id: 'stats', label: 'Stats', icon: '📈' },
+  { id: 'prompts', label: 'Prompts & runs', icon: '🧾' },
 ];
 
 export default function Sidebar({ activeNode, onNodeClick, staleCounts = {} }) {

@@ -64,7 +64,20 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_recipe(job_type: str, version: int = 1) -> str:
+def latest_version(job_type: str) -> int:
+    """Highest saved version number for a recipe (1 when only the original exists)."""
+    import re as _re
+    found = [int(m.group(1)) for m in
+             (_re.match(rf"^{_re.escape(job_type)}_v(\d+)\.txt$", p.name)
+              for p in RECIPES_DIR.glob(f"{job_type}_v*.txt")) if m]
+    return max(found) if found else 1
+
+
+def load_recipe(job_type: str, version: int | None = None) -> str:
+    # version=None -> newest. Editing a recipe in the Prompt Library writes a new
+    # version, so everything must resolve to the latest or edits would be ignored.
+    if version is None:
+        version = latest_version(job_type)
     path = RECIPES_DIR / f"{job_type}_v{version}.txt"
     if not path.exists():
         raise FileNotFoundError(f"Recipe missing: {path.name}")
@@ -122,21 +135,38 @@ def _validate(raw: str, schema):
 
 
 async def _log_job(job_type, model, temp, context, raw, parsed,
-                   t_in, t_out, ms, error, project_id, channel_id):
+                   t_in, t_out, ms, error, project_id, channel_id, escalated=0):
     db = await get_app_db()
     await db.execute(
         """INSERT INTO job_log (project_id, channel_id, job_type, inputs, context_pack,
            model, temperature, raw_output, parsed_output, tokens_in, tokens_out,
-           duration_ms, error, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           duration_ms, error, created_at, escalated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (project_id, channel_id, job_type, "{}", json.dumps(context), model, temp,
          raw, json.dumps(parsed) if parsed is not None else None,
-         t_in, t_out, ms, error, now_iso()))
+         t_in, t_out, ms, error, now_iso(), 1 if escalated else 0))
     await db.commit()
     await db.close()
 
 
+def _escalation_target(spec: dict, current_model: str):
+    """Pick a stronger model when a cheap tier can't produce valid output.
+
+    Returns None when there is nothing to escalate to: the job is already on the
+    high tier, the user pinned a single model for everything, or the high tier
+    resolves to the same model we just tried.
+    """
+    if spec["tier"] == "high":
+        return None
+    if config.load_settings().get("use_single_model"):
+        return None
+    candidate = _model_for("high")
+    if not candidate or candidate == current_model:
+        return None
+    return candidate
+
+
 async def dispatch(job_type: str, context: dict, schema=None,
-                   project_id=None, channel_id=None, recipe_version=1):
+                   project_id=None, channel_id=None, recipe_version=None):
     """Recipe + context pack -> call -> validate -> repair-retry once -> log.
     Rate-limited: max 2 concurrent, exponential backoff on 429."""
     async def _inner():
@@ -173,6 +203,26 @@ async def dispatch(job_type: str, context: dict, schema=None,
             t_out = (t_out or 0) + (t_out2 or 0)
             parsed, error = _validate(raw, schema)
             if error is not None:
+                # Auto-escalation: cheap models routinely fail structured output.
+                # Instead of dying, retry once on the strongest tier so the default
+                # stays cheap but the stage still completes.
+                esc_model = _escalation_target(spec, model)
+                if esc_model is not None:
+                    try:
+                        raw, t_in3, t_out3 = await _chat(client, esc_model, spec["temp"], messages)
+                        t_in = (t_in or 0) + (t_in3 or 0)
+                        t_out = (t_out or 0) + (t_out3 or 0)
+                        parsed, error = _validate(raw, schema)
+                    except Exception as e:
+                        error = f"{error} | escalation call failed: {e}"
+                    await _log_job(job_type, esc_model, spec["temp"], context, raw, parsed,
+                                   t_in, t_out, int((time.time() - start) * 1000),
+                                   error if error else None, project_id, channel_id,
+                                   escalated=1)
+                    if error is None:
+                        return {"ok": True, "parsed": parsed, "raw": raw, "escalated": True}
+                    return {"ok": False, "error": error, "raw": raw, "escalated": True}
+
                 await _log_job(job_type, model, spec["temp"], context, raw, None,
                                t_in, t_out, int((time.time() - start) * 1000), error,
                                project_id, channel_id)
@@ -188,7 +238,7 @@ async def dispatch(job_type: str, context: dict, schema=None,
 
 
 async def dispatch_stream(job_type: str, context: dict,
-                          project_id=None, channel_id=None, recipe_version=1):
+                          project_id=None, channel_id=None, recipe_version=None):
     """Async generator yielding SSE frames for streamed jobs. Rate-limited."""
     async def _inner():
         spec = JOB_MAP.get(job_type)
