@@ -9,4 +9,12 @@ Rules:
 - green_conflict: true if the character's signature look is mostly chroma-green.
 - world_annotations: real brands/logos/people tied to this character, else [].
 - mentions: every textual mention with section + confidence (1.0 explicit name, 0.6-0.9 resolved alias). Never output raw pronouns.
+- actions: 2-6 poses/actions YOU choose for this character's sprite sheet. 6 is a HARD CEILING.
+  YOU decide the count and the content - do not emit a fixed list.
+  Choose based on what this character actually DOES in the script (their beats), plus
+  the emotional reactions they need. Include expression-led poses (shocked, angry,
+  determined) when the character has reaction moments, not only physical movement.
+  Major characters who do more get closer to 6; a one-line minor character gets 2-3.
+  Each entry: short imperative phrase, e.g. "walking, three-quarter view",
+  "shouting in anger", "slumped in defeat". Never exceed 6.
 Return ONLY JSON: {"characters": [...], "mentions": [...]}

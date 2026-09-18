@@ -73,7 +73,17 @@ def load_recipe(job_type: str, version: int = 1) -> str:
 
 def _client() -> AsyncOpenAI:
     s = config.load_settings()
-    return AsyncOpenAI(base_url=s["endpoint"], api_key=s["api_key"] or "missing-key")
+    # This environment sets HTTP(S)_PROXY. The OpenAI SDK honours those vars,
+    # so calls to a LOCAL endpoint get routed through the proxy and die with
+    # APIConnectionError on larger (sharded) payloads while tiny ones survive.
+    # LLM endpoints are user-configured and usually local -> bypass proxies.
+    try:
+        import httpx2
+        http_client = httpx2.AsyncClient(trust_env=False)
+    except Exception:
+        http_client = None
+    kwargs = {"http_client": http_client} if http_client is not None else {}
+    return AsyncOpenAI(base_url=s["endpoint"], api_key=s["api_key"] or "missing-key", **kwargs)
 
 
 def _model_for(tier: str) -> str:
@@ -220,8 +230,12 @@ async def dispatch_stream(job_type: str, context: dict,
                        project_id, channel_id)
         yield "data: [DONE]\n\n"
 
+    # NOTE: _with_backoff() expects a coroutine, but _inner() is an async
+    # generator -> wrapping it produced "async for ... got coroutine".
+    # Streams can't be retried mid-flight anyway, and _inner() already
+    # yields its own error frames, so just gate on the semaphore here.
     async with _SEMAPHORE:
-        async for frame in _with_backoff(_inner()):
+        async for frame in _inner():
             yield frame
 
 

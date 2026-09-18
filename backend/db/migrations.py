@@ -242,6 +242,21 @@ async def init_app_db(db_conn):
     await db_conn.executescript(APP_SCHEMA)
     await db_conn.commit()
 
+async def _ensure_column(db_conn, table: str, column: str, ddl: str):
+    """Add a column to an existing table if it is missing.
+
+    PROJECT_SCHEMA is CREATE TABLE IF NOT EXISTS, which is a no-op on any
+    project database that already exists - so newly added columns would never
+    reach existing projects. This backfills them idempotently.
+    """
+    async with db_conn.execute(f"PRAGMA table_info({table})") as cur:
+        cols = {r["name"] for r in await cur.fetchall()}
+    if column not in cols:
+        await db_conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 async def init_project_db(db_conn):
     await db_conn.executescript(PROJECT_SCHEMA)
+    # AI-chosen sprite-sheet actions per character (JSON list, 2-6 entries).
+    await _ensure_column(db_conn, "characters", "actions", "TEXT")
     await db_conn.commit()

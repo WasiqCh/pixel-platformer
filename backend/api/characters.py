@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from backend.core.id_generator import IDGenerator
 from backend.core.sharding import sharded_extract
+from backend.core.sheet_layout import CHAR_ACTIONS_PER_SHEET
 from backend.db.connection import get_app_db, get_project_db
 from backend.models.character import CharacterExtractResult
 from backend.storage.fs_manager import get_project_dir
@@ -137,6 +138,11 @@ async def extract_characters(project_id: str):
                 (item["kind"], item["faction"], item["significance"],
                  json.dumps(item["presence_sections"]), 1 if item["green_conflict"] else 0,
                  now, row["id"]))
+            # Only overwrite actions when the AI actually proposed some, so a
+            # thin re-extract doesn't wipe previously chosen poses.
+            if item.get("actions"):
+                await proj_db.execute("UPDATE characters SET actions=? WHERE id=?",
+                                      (json.dumps(item["actions"][:CHAR_ACTIONS_PER_SHEET]), row["id"]))
             updated += 1
         else:
             world_ref = None
@@ -149,12 +155,13 @@ async def extract_characters(project_id: str):
                 world_ref = rw_id
             char_id = await gen.mint_character()
             await proj_db.execute(
-                "INSERT INTO characters (id, project_id, kind, faction, render, names, appearance, significance, presence, green_conflict, world_record_ref, stale, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                "INSERT INTO characters (id, project_id, kind, faction, render, names, appearance, significance, presence, green_conflict, world_record_ref, actions, stale, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                 (char_id, project_id, item["kind"], item["faction"], item["render"],
                  json.dumps([item["name"]] + item["aliases"]), item["appearance"],
                  item["significance"], json.dumps(item["presence_sections"]),
-                 1 if item["green_conflict"] else 0, world_ref, now, now))
+                 1 if item["green_conflict"] else 0, world_ref,
+                 json.dumps((item.get("actions") or [])[:CHAR_ACTIONS_PER_SHEET]), now, now))
             added += 1
 
     staled = 0

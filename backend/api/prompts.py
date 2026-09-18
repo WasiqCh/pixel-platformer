@@ -12,19 +12,10 @@ from backend.core.composer import (clean_text, classify_overlay, pacing_flags, p
 from backend.db.connection import get_app_db, get_project_db
 from backend.storage.fs_manager import get_project_dir
 
-# Match sheets.py constants
-CHAR_ACTIONS_PER_SHEET = 6
-CHAR_CELLS = [
-    "wide full-body neutral stance",
-    "medium front three-quarter view",
-    "medium profile walking",
-    "close-up face neutral",
-    "close-up face determined",
-    "close-up face angry or afraid",
-    "signature action pose",
-    "holding signature props",
-    "pure silhouette",
-]
+# Sprite-sheet layout constants now live in one place (backend/core/sheet_layout.py).
+# They used to be copy-pasted here and in sheets.py, which let the sheet builder
+# and the prompt composer disagree on sheet numbering.
+from backend.core.sheet_layout import CHAR_ACTIONS_PER_SHEET, CHAR_CELLS
 
 router = APIRouter(tags=["prompts"])
 
@@ -194,8 +185,11 @@ async def _compose_all(project_id, update_db, write):
                 identity = (var["delta"] if var else (ch["appearance"] if ch else "as described in script"))
                 snip = " ".join(b["text"].split()[:12])
                 
-                # Increment action counter for this character
-                char_action_counter[ref] += 1
+                # Increment action counter for this asset.
+                # Counter is seeded from characters only, but world records
+                # (RW*/MT*) can also be classified dynamic -> use .get() so
+                # non-character assets don't raise KeyError.
+                char_action_counter[ref] = char_action_counter.get(ref, 0) + 1
                 action_idx = char_action_counter[ref]
                 sheet_num = ((action_idx - 1) // CHAR_ACTIONS_PER_SHEET) + 1
                 action_num = ((action_idx - 1) % CHAR_ACTIONS_PER_SHEET) + 1
