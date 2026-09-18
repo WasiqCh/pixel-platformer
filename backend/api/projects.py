@@ -1,4 +1,6 @@
 # backend/api/projects.py
+import asyncio
+import gc
 import shutil
 from datetime import datetime, timezone
 
@@ -24,6 +26,27 @@ class ProjectRename(BaseModel):
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _rmtree_with_retry(folder, attempts: int = 5, delay: float = 0.3) -> bool:
+    """Remove a project folder, retrying past transient Windows file locks.
+
+    Endpoints can leak an open aiosqlite handle; on Windows that keeps project.db
+    locked and makes a plain rmtree blow up. Collect garbage and retry a few times
+    before giving up, and never let a stuck folder turn into a 500.
+    """
+    for i in range(attempts):
+        gc.collect()
+        try:
+            shutil.rmtree(folder)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if i == attempts - 1:
+                return False
+            await asyncio.sleep(delay * (i + 1))
+    return False
 
 
 @router.get("/channels/{ch_id}/projects")
@@ -83,14 +106,17 @@ async def delete_project(project_id: str):
     db = await get_app_db()
     async with db.execute("SELECT folder_name FROM projects WHERE id=?", (project_id,)) as cur:
         row = await cur.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(404, "Project not found")
     await db.execute("DELETE FROM projects WHERE id=?", (project_id,))
     await db.commit()
     await db.close()
     if row:
         folder = DATA_DIR / "projects" / row["folder_name"]
-        if folder.exists():
-            shutil.rmtree(folder)
-    return {"status": "deleted"}
+        folder_removed = await _rmtree_with_retry(folder)
+        return {"status": "deleted", "folder_removed": folder_removed}
+    return {"status": "deleted", "folder_removed": True}
 
 
 @router.post("/projects/{project_id}/duplicate")

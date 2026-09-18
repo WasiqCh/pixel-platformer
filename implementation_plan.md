@@ -25,7 +25,7 @@
 | **Deployment** | Localhost (dev) → Cloud later (team) | One-click launcher (`start.bat`/`start.sh`) boots both servers + opens browser. |
 
 ### Dev Setup
-- Vite dev server proxies `/api` → FastAPI on `:8000`
+- Vite dev server proxies `/api` → FastAPI on `:8100`
 - Backend: `uvicorn backend.main:app --reload --port 8000`
 - Frontend: `npm run dev` (Vite default port)
 - Launcher wraps both + opens browser automatically
@@ -190,7 +190,7 @@ app/
 │   │       ├── useStream.js       # SSE/streaming for long-form jobs
 │   │       ├── useJobPoll.js      # FIFO job queue polling
 │   │       └── useRipple.js       # Stale-dot state management
-│   └── vite.config.js             # Proxy /api → FastAPI :8000
+│   └── vite.config.js             # Proxy /api → FastAPI :8100
 ├── data/                          # USER DATA — .gitignored
 │   ├── settings.json              # endpoint, models (3 slots), key
 │   ├── channels/

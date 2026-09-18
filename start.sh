@@ -1,6 +1,6 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-./.venv/bin/python -m uvicorn backend.main:app --reload --port 8100 &
+./.venv/bin/python -m uvicorn backend.main:app --reload --reload-dir backend --port 8100 &
 BACK_PID=$!
 cd frontend && npm run dev &
 FRONT_PID=$!

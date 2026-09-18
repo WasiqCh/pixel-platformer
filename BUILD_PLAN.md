@@ -43,7 +43,7 @@ app/
 │   │   ├── components/      # BlockButton, Card, StatusDot, AssetTag, DiffView…
 │   │   ├── screens/         # S01…S17 + G01/G02 (from UI_UX.md)
 │   │   └── hooks/           # api calls, streaming, job polling
-│   └── vite.config.js       # proxies /api → FastAPI :8000
+│   └── vite.config.js       # proxies /api → FastAPI :8100
 ├── data/                    # USER DATA — gitignored
 │   ├── settings.json        # endpoint, models (3 slots), key
 │   ├── channels/CH01/       # style_kit/, library/
@@ -147,6 +147,6 @@ app/
 python -m venv .venv && pip install -r backend/requirements.txt
 uvicorn backend.main:app --reload --port 8000
 # frontend
-cd frontend && npm install && npm run dev   # proxies /api → :8000
+cd frontend && npm install && npm run dev   # proxies /api → :8100
 ```
 Launcher (`start.bat`/`start.sh`) wraps both + opens the browser (P01 lock).

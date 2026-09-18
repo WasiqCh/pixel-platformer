@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 
 echo [1/3] Starting backend on :8100 ...
-start "PixelBackend" cmd /k ".venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8100"
+start "PixelBackend" cmd /k ".venv\Scripts\python.exe -m uvicorn backend.main:app --reload --reload-dir backend --port 8100"
 
 echo [2/3] Starting frontend on :3000 ...
 cd frontend

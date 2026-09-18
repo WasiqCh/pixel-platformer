@@ -17,6 +17,7 @@ import S12_Export from './screens/S12_Export'
 import S13_Checkpoint from './screens/S13_Checkpoint'
 import S14_Handoff from './screens/S14_Handoff'
 import S17_Settings from './screens/S17_Settings'
+import { setSfxEnabled } from './lib/sfx'
 
 function App() {
   const [status, setStatus] = useState('loading')
@@ -29,7 +30,10 @@ function App() {
   useEffect(() => {
     fetch('/api/v1/settings')
       .then(res => res.json())
-      .then(data => setStatus(data.api_key ? 'ready' : 'no_key'))
+      .then(data => {
+        setStatus(data.api_key ? 'ready' : 'no_key');
+        setSfxEnabled(data.sfx);
+      })
       .catch(() => setStatus('error'))
   }, [])
 

@@ -3,6 +3,7 @@ import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
 import StreamLab from '../components/StreamLab';
+import { playSfx, setSfxEnabled } from '../lib/sfx';
 
 export default function S17_Settings() {
   const [settings, setSettings] = useState({
@@ -27,6 +28,11 @@ export default function S17_Settings() {
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
+    if (name === 'sfx') {
+      // Apply immediately and play a blip so the toggle is obviously working.
+      setSfxEnabled(checked);
+      if (checked) playSfx('coin');
+    }
     if (name.startsWith('model_')) {
       const tier = name.split('_')[1];
       setSettings(prev => ({
@@ -51,13 +57,16 @@ export default function S17_Settings() {
       });
       if (res.ok) {
         setStatus('saved');
+        playSfx('save');
         setTimeout(() => setStatus('idle'), 2000);
       } else {
         setStatus('idle');
+        playSfx('error');
         alert("Failed to save settings");
       }
     } catch (err) {
       setStatus('idle');
+      playSfx('error');
       alert("Error saving settings");
     }
   };
@@ -71,13 +80,16 @@ export default function S17_Settings() {
       if (data.ok) {
         setStatus('test_success');
         setTestMsg(`Success! Connected to ${data.model}`);
+        playSfx('success');
       } else {
         setStatus('test_error');
         setTestMsg(`Failed: ${data.error}`);
+        playSfx('error');
       }
     } catch (err) {
       setStatus('test_error');
       setTestMsg("Network error. Is the backend running?");
+      playSfx('error');
     }
   };
 
@@ -164,6 +176,11 @@ export default function S17_Settings() {
               Enable 8-bit Sound Effects
             </label>
           </div>
+          <p className="mt-2 text-xs text-ink/60 font-body">
+            Blips are generated live in your browser (Web Audio), so there are no sound
+            files to download. Enable it to hear a preview; buttons and navigation will
+            then click.
+          </p>
       </Card>
 
       <StreamLab />

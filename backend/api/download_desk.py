@@ -1,4 +1,5 @@
 # backend/api/download_desk.py
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -57,10 +58,21 @@ async def autosearch(project_id: str, rw_id: str, q: Optional[str] = None):
     url = ("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search"
            f"&gsrsearch=filetype:bitmap%20{query.replace(' ', '%20')}&gsrlimit=10&gsrnamespace=6"
            "&prop=imageinfo&iiprop=url%7Cextmetadata%7Csize&iiurlwidth=320")
-    async with httpx.AsyncClient(timeout=30) as cl:
-        r = await cl.get(url, headers={"User-Agent": "PixelPlatformer/1.0 (animation pipeline)"})
-    if r.status_code != 200:
-        raise HTTPException(502, f"Wikimedia HTTP {r.status_code}")
+    # Wikimedia rate-limits aggressively and hands out transient 403/429s that clear
+    # on their own, so retry a couple of times before surfacing an error to the user.
+    headers = {"User-Agent": "PixelPlatformer/1.0 (animation pipeline; localhost)"}
+    r = None
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=30) as cl:
+            r = await cl.get(url, headers=headers)
+        if r.status_code == 200:
+            break
+        if r.status_code not in (403, 429, 500, 502, 503, 504):
+            break
+        if attempt < 2:
+            await asyncio.sleep(1.0 * (attempt + 1))
+    if r is None or r.status_code != 200:
+        raise HTTPException(502, f"Wikimedia HTTP {getattr(r, 'status_code', 'no response')}")
     pages = (r.json().get("query") or {}).get("pages") or {}
     out = []
     for p in pages.values():
