@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
+import BlockButton from './components/BlockButton'
 import S01_Home from './screens/S01_Home'
 import S02_IdeaStudio from './screens/S02_IdeaStudio'
 import S03_TitleStudio from './screens/S03_TitleStudio'
@@ -18,13 +19,16 @@ import S13_Checkpoint from './screens/S13_Checkpoint'
 import S14_Handoff from './screens/S14_Handoff'
 import S17_Settings from './screens/S17_Settings'
 import S18_Prompts from './screens/S18_Prompts'
-import { setSfxEnabled } from './lib/sfx'
+import { setSfxEnabled, playSfx } from './lib/sfx'
 
 function App() {
   const [status, setStatus] = useState('loading')
   const [activeNode, setActiveNode] = useState('home')
   const [currentChannel, setCurrentChannel] = useState(null)
   const [currentProject, setCurrentProject] = useState(null)
+  const [stale, setStale] = useState({})
+  const [staleBusy, setStaleBusy] = useState(false)
+  const [staleMsg, setStaleMsg] = useState('')
 
   const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'export', 'checkpoint', 'handoff', 'settings', 'prompts']
 
@@ -38,6 +42,37 @@ function App() {
       .catch(() => setStatus('error'))
   }, [])
 
+  // Stale counts refresh on project change and after any re-extract.
+  const loadStale = () => {
+    if (!currentProject?.id) { setStale({}); return; }
+    fetch(`/api/v1/projects/${currentProject.id}/stale`)
+      .then(res => res.json())
+      .then(d => setStale(d || {}))
+      .catch(() => setStale({}));
+  };
+
+  useEffect(() => { loadStale(); }, [currentProject?.id]);
+
+  const staleAction = async (kind) => {
+    if (!currentProject?.id) return;
+    setStaleBusy(true); setStaleMsg('');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/stale/${kind}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { setStaleMsg(data.detail || 'Failed'); playSfx('error'); return; }
+      if (kind === 'reextract') {
+        const failed = data.failed || [];
+        setStaleMsg(failed.length ? `Rebuilt, but ${failed.join(', ')} failed` : `Rebuilt ${(data.attempted || []).join(', ')}`);
+        playSfx(failed.length ? 'error' : 'success');
+      } else {
+        setStaleMsg(`Marked ${data.cleared} reviewed`);
+        playSfx('save');
+      }
+      loadStale();
+    } catch { setStaleMsg('Network error'); playSfx('error'); }
+    setStaleBusy(false);
+  };
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-sky">
       <TopBar
@@ -50,11 +85,33 @@ function App() {
         <Sidebar
           activeNode={activeNode}
           onNodeClick={setActiveNode}
-          staleCounts={{}}
+          staleCounts={stale}
         />
 
         <main className="flex-1 p-8 overflow-y-auto">
           <div className="max-w-6xl mx-auto">
+
+            {(stale.total > 0) && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 p-3 border-2 border-warn bg-warn/15 rounded-md">
+                <p className="font-body text-sm text-ink">
+                  <span className="font-heading font-bold">{stale.total} artifact{stale.total === 1 ? '' : 's'} went stale</span>
+                  {' — the locked script changed, so these need a look: '}
+                  <span className="font-mono text-xs">
+                    {['cast', 'variants', 'locations', 'world', 'beats', 'sheets']
+                      .filter(s => stale[s] > 0).map(s => `${s} ${stale[s]}`).join(' · ')}
+                  </span>
+                </p>
+                <div className="flex items-center gap-2">
+                  <BlockButton variant="secondary" disabled={staleBusy} onClick={() => staleAction('clear')}>
+                    Mark reviewed
+                  </BlockButton>
+                  <BlockButton disabled={staleBusy} onClick={() => staleAction('reextract')}>
+                    {staleBusy ? 'Rebuilding…' : 'Re-extract stale'}
+                  </BlockButton>
+                  {staleMsg && <span className="text-xs font-heading text-primary">{staleMsg}</span>}
+                </div>
+              </div>
+            )}
 
             {activeNode === 'home' && (
               <S01_Home

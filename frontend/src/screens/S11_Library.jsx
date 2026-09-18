@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
+import { playSfx } from '../lib/sfx';
 
 const safeJson = async (res) => {
   const t = await res.text();
@@ -155,6 +156,47 @@ export default function S11_Library({ currentProject }) {
     </div>
   );
 
+  // You generate images outside the app, so the checkpoint's "n/m ready" gate would
+  // otherwise nag forever. This records that an asset exists without uploading it.
+  const setStatus = async (libId, status) => {
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/library/${libId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      });
+      if (!res.ok) { const d = await safeJson(res); alert('Update failed: ' + (d.detail || 'Unknown')); return; }
+      playSfx('save');
+      refresh();
+    } catch (e) { alert('Network error: ' + e.message); }
+  };
+
+  const markAllReady = async () => {
+    const empty = items.filter(i => i.status !== 'ready');
+    if (!empty.length) return;
+    if (!confirm(`Mark all ${empty.length} remaining slots ready?\nUse this when you generated them outside the app.`)) return;
+    for (const it of empty) {
+      await fetch(`/api/v1/projects/${currentProject.id}/library/${it.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ready' })
+      });
+    }
+    playSfx('success');
+    refresh();
+  };
+
+  const downloadPack = async () => {
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/work-pack`);
+      const d = await safeJson(res);
+      if (!res.ok) { alert('Work pack failed: ' + (d.detail || 'Unknown')); playSfx('error'); return; }
+      const url = URL.createObjectURL(new Blob([d.content], { type: 'text/markdown' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = d.filename; a.click();
+      URL.revokeObjectURL(url);
+      playSfx('save');
+    } catch (e) { alert('Network error: ' + e.message); playSfx('error'); }
+  };
+
   const remove = async (libId) => {
     if (!confirm('Delete this library slot?')) return;
     await fetch(`/api/v1/projects/${currentProject.id}/library/${libId}`, { method: 'DELETE' });
@@ -197,6 +239,10 @@ export default function S11_Library({ currentProject }) {
       {it.kind === 'world' && (
         <BlockButton variant="secondary" onClick={() => autoSearch(it)} title="Auto-search free-license images">✨</BlockButton>
       )}
+      <BlockButton variant="secondary" onClick={() => setStatus(it.id, it.status === 'ready' ? 'empty' : 'ready')}
+        title={it.status === 'ready' ? 'Mark as not ready' : 'Mark ready without uploading'}>
+        {it.status === 'ready' ? '↩' : '✓'}
+      </BlockButton>
       <BlockButton variant="secondary" onClick={() => pickFile(it.id)}>📤</BlockButton>
       <button onClick={() => remove(it.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
     </div>
@@ -206,9 +252,15 @@ export default function S11_Library({ currentProject }) {
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="font-display text-2xl text-ink">Asset Library + Download Desk</h2>
-        <BlockButton onClick={scaffold} disabled={loading}>
-          {loading ? 'Scaffolding...' : '🧱 Scaffold Library'}
-        </BlockButton>
+        <div className="flex gap-2">
+          <BlockButton variant="secondary" onClick={downloadPack}
+            title="One file with every prompt in generation order, for working outside the app">
+            ⬇ Work pack
+          </BlockButton>
+          <BlockButton onClick={scaffold} disabled={loading}>
+            {loading ? 'Scaffolding...' : '🧱 Scaffold Library'}
+          </BlockButton>
+        </div>
       </div>
 
       <input ref={fileRef} type="file" accept="image/*,.png,.jpg,.jpeg,.webp" onChange={onFile} className="hidden" />
@@ -219,6 +271,13 @@ export default function S11_Library({ currentProject }) {
             <span>PRODUCTION READINESS</span>
             <span>{ready} / {items.length} assets ready ({pct}%)</span>
             <span>🌐 vault: {vaultCount} reusable</span>
+          </div>
+          <div className="flex justify-end mb-1">
+            <BlockButton variant="secondary" onClick={markAllReady}
+              disabled={ready === items.length}
+              title="Generated everything outside the app? Mark the rest ready.">
+              ✓ Mark all remaining ready
+            </BlockButton>
           </div>
           <div className="h-4 border-2 border-ink rounded overflow-hidden bg-white">
             <div className="h-full bg-success transition-all" style={{ width: `${pct}%` }} />

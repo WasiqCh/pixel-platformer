@@ -41,6 +41,75 @@ async def _proj(project_id):
     return r["folder_name"], r["channel_id"], desc
 
 
+@router.get("/projects/{project_id}/work-pack")
+async def work_pack(project_id: str):
+    """Everything needed to generate this episode, in one file, in the right order.
+
+    Built for generating images OUTSIDE the app: character sheets first (they are
+    the references), then environment sheets, then one prompt per shot, each with
+    the reference image it must be chained to.
+    """
+    folder, ch_id, descriptor = await _proj(project_id)
+    proj_dir = get_project_dir(ch_id, folder.split("_")[1])
+
+    lines = [
+        f"# WORK PACK — {project_id}",
+        "",
+        "Generate in this order. Sheets first: they become the reference images",
+        "for everything after them.",
+        "",
+        f"STYLE: {descriptor}",
+        "",
+    ]
+
+    def _sheets(sub, heading):
+        d = proj_dir / "06_assets" / sub
+        files = sorted(d.glob("*_sheet.md")) if d.exists() else []
+        if not files:
+            return 0
+        lines.append(f"---")
+        lines.append(f"# {heading}")
+        lines.append("")
+        for f in files:
+            lines.append(f"## {f.stem}")
+            lines.append(f.read_text(encoding="utf-8").strip())
+            lines.append("")
+        return len(files)
+
+    n_char = _sheets("characters", "1. CHARACTER SHEETS")
+    n_env = _sheets("environments", "2. ENVIRONMENT SHEETS")
+
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute(
+        "SELECT gen_label, kind, asset_ref, beat_id, title, prompt, status "
+        "FROM generations WHERE project_id=? ORDER BY id", (project_id,)) as cur:
+        gens = [dict(r) for r in await cur.fetchall()]
+    await proj_db.close()
+
+    lines.append("---")
+    lines.append("# 3. SHOT PROMPTS")
+    lines.append("")
+    masters = [g for g in gens if g["kind"] == "master"]
+    poses = [g for g in gens if g["kind"] != "master"]
+    for label, group in (("Masters (do these first)", masters), ("Shots", poses)):
+        if not group:
+            continue
+        lines.append(f"## {label}")
+        lines.append("")
+        for g in group:
+            state = "done" if g.get("status") == "ready" else "TODO"
+            lines.append(f"### [{state}] {g['gen_label']} — {g['title']}")
+            lines.append(f"ref: {g['asset_ref']} · beat: {g['beat_id'] or '-'}")
+            lines.append(g["prompt"])
+            lines.append("")
+
+    return {
+        "filename": f"{project_id}_workpack.md",
+        "counts": {"characters": n_char, "environments": n_env, "shots": len(gens)},
+        "content": "\n".join(lines),
+    }
+
+
 async def _compose_all(project_id, update_db, write):
     folder, ch_id, descriptor = await _proj(project_id)
     proj_db = await get_project_db(folder)
