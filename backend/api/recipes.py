@@ -8,6 +8,7 @@ Two things the app has always had but never exposed:
 Editing a recipe writes a NEW version file rather than overwriting, so a bad
 edit can always be undone by loading an older version and saving it again.
 """
+import json
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -16,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.core.config import DATA_DIR
-from backend.core.llm_client import JOB_MAP, RECIPES_DIR
+from backend.core.llm_client import JOB_MAP, RECIPES_DIR, _model_for, dispatch
 from backend.db.connection import get_app_db
 
 router = APIRouter(tags=["recipes"])
@@ -41,6 +42,12 @@ def _check_job(job: str):
 
 class RecipeUpdate(BaseModel):
     content: str
+
+
+class ABRequest(BaseModel):
+    version_a: int
+    version_b: int
+    project_id: Optional[str] = None
 
 
 @router.get("/recipes")
@@ -98,6 +105,82 @@ async def save_recipe(job: str, body: RecipeUpdate):
     new_v = current + 1
     (RECIPES_DIR / f"{job}_v{new_v}.txt").write_text(text, encoding="utf-8")
     return {"status": "saved", "version": new_v, "previous_version": current}
+
+
+@router.get("/recipes/{job}/preview")
+async def recipe_preview(job: str):
+    """What this job will use, and how it has actually behaved recently.
+
+    Deliberately built from real job_log history rather than a token estimate:
+    "the light model has failed this 9 of 12 times" is more useful than a guess.
+    """
+    _check_job(job)
+    spec = JOB_MAP[job]
+    db = await get_app_db()
+    async with db.execute(
+        "SELECT COUNT(*) n, SUM(error IS NOT NULL) bad, SUM(escalated) esc,"
+        " AVG(COALESCE(tokens_in,0)) avg_in, AVG(COALESCE(tokens_out,0)) avg_out,"
+        " AVG(duration_ms) avg_ms FROM job_log WHERE job_type=?", (job,)) as cur:
+        hist = dict(await cur.fetchone())
+    await db.close()
+    n = hist.get("n") or 0
+    return {
+        "job": job,
+        "tier": spec["tier"],
+        "model": _model_for(spec["tier"]),
+        "temperature": spec["temp"],
+        "stream": spec["stream"],
+        "versions": _versions(job),
+        "history": {
+            "runs": n,
+            "failures": hist.get("bad") or 0,
+            "escalated": hist.get("esc") or 0,
+            "failure_rate": round((hist.get("bad") or 0) / n, 2) if n else None,
+            "avg_tokens_in": round(hist["avg_in"] or 0),
+            "avg_tokens_out": round(hist["avg_out"] or 0),
+            "avg_ms": round(hist["avg_ms"] or 0),
+        },
+    }
+
+
+@router.post("/recipes/{job}/ab-test")
+async def ab_test(job: str, body: ABRequest):
+    """Run the same input through two recipe versions and show both outputs.
+
+    Reuses the context_pack of the most recent real run of this job, so you are
+    comparing against something the pipeline actually sent rather than a
+    made-up sample.
+    """
+    _check_job(job)
+    versions = _versions(job)
+    for v in (body.version_a, body.version_b):
+        if v not in versions:
+            raise HTTPException(400, f"Version {v} does not exist for '{job}'")
+
+    db = await get_app_db()
+    async with db.execute(
+        "SELECT context_pack, project_id FROM job_log WHERE job_type=? AND context_pack IS NOT NULL"
+        " ORDER BY id DESC LIMIT 1", (job,)) as cur:
+        row = await cur.fetchone()
+    await db.close()
+    if not row:
+        raise HTTPException(400, "No previous run of this job to reuse as sample input.")
+    try:
+        context = json.loads(row["context_pack"])
+    except Exception:
+        raise HTTPException(400, "Stored sample context could not be read.")
+
+    pid = body.project_id or row["project_id"]
+    a = await dispatch(job, context, schema=None, project_id=pid, recipe_version=body.version_a)
+    b = await dispatch(job, context, schema=None, project_id=pid, recipe_version=body.version_b)
+
+    def _side(res, version):
+        return {"version": version, "ok": res.get("ok", False),
+                "output": (res.get("parsed") or res.get("raw") or ""),
+                "error": res.get("error")}
+
+    return {"job": job, "context": context,
+            "a": _side(a, body.version_a), "b": _side(b, body.version_b)}
 
 
 @router.get("/runs")

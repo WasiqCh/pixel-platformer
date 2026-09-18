@@ -26,7 +26,8 @@ from backend.api import editor_export as editor_export_api  # <--- ADD
 from backend.api import download_desk as download_desk_api  # <--- ADD
 from backend.api import voiceover as voiceover_api
 from backend.api import recipes as recipes_api
-from backend.api import stale as stale_api  # <--- ADD
+from backend.api import stale as stale_api
+from backend.api import dashboard as dashboard_api  # <--- ADD
 
 
 
@@ -68,4 +69,5 @@ app.include_router(download_desk_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(voiceover_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(recipes_api.router, prefix="/api/v1")
 app.include_router(stale_api.router, prefix="/api/v1")
+app.include_router(dashboard_api.router, prefix="/api/v1")
 

@@ -4,6 +4,7 @@ import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
 import StatusDot from '../components/StatusDot';
 import KitWizard from '../components/KitWizard';
+import EpisodeDashboard from '../components/EpisodeDashboard';
 
 export default function S01_Home({ currentChannel, currentProject, onSelectChannel, onSelectProject, onNavigate }) {
   const [channels, setChannels] = useState([]);
@@ -140,6 +141,10 @@ export default function S01_Home({ currentChannel, currentProject, onSelectChann
             <BlockButton onClick={createProject}>Create Project</BlockButton>
           </div>
         </Card>
+      )}
+
+      {currentProject && (
+        <EpisodeDashboard currentProject={currentProject} onNavigate={onNavigate} />
       )}
 
       {currentChannel && <KitWizard channel={currentChannel} />}

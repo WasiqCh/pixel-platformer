@@ -33,6 +33,11 @@ export default function S18_Prompts() {
   const [openRun, setOpenRun] = useState(null);
   const [runDetail, setRunDetail] = useState(null);
   const [stats, setStats] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [abA, setAbA] = useState('');
+  const [abB, setAbB] = useState('');
+  const [abResult, setAbResult] = useState(null);
+  const [abBusy, setAbBusy] = useState(false);
 
   const [status, setStatus] = useState('idle'); // idle | loading | saving | saved | error
   const [msg, setMsg] = useState('');
@@ -75,6 +80,30 @@ export default function S18_Prompts() {
   }, [selected]);
 
   useEffect(() => { loadRuns(); }, [loadRuns]);
+
+  // Tier, resolved model and real pass/fail history for the selected job.
+  useEffect(() => {
+    if (!selected) return;
+    fetch(`/api/v1/recipes/${selected}/preview`)
+      .then(r => r.json()).then(setPreview).catch(() => setPreview(null));
+  }, [selected]);
+
+  const runAB = async () => {
+    if (!abA || !abB || abA === abB) { setMsg('Pick two different versions.'); return; }
+    setAbBusy(true); setAbResult(null); setMsg('');
+    try {
+      const res = await fetch(`/api/v1/recipes/${selected}/ab-test`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version_a: Number(abA), version_b: Number(abB) })
+      });
+      const data = await res.json();
+      if (!res.ok) { setMsg(data.detail || 'A/B failed'); playSfx('error'); return; }
+      setAbResult(data);
+      playSfx('success');
+      loadRuns();
+    } catch { setMsg('Network error'); playSfx('error'); }
+    setAbBusy(false);
+  };
 
   const save = async () => {
     setStatus('saving');
@@ -172,6 +201,24 @@ export default function S18_Prompts() {
               </div>
             }
           >
+            {preview && (
+              <div className="flex flex-wrap items-center gap-2 mb-2 text-xs font-body">
+                <span className="font-heading font-bold px-2 py-0.5 rounded border border-ink/30">
+                  tier: {preview.tier}
+                </span>
+                <span className="font-mono text-ink/70">{preview.model}</span>
+                <span className="text-ink/60">temp {preview.temperature}</span>
+                {preview.history.runs > 0 && (
+                  <span className={preview.history.failure_rate >= 0.5
+                    ? 'text-danger font-heading font-bold' : 'text-ink/60'}>
+                    {preview.history.runs} runs · {preview.history.failures} failed
+                    {preview.history.escalated ? ` · ${preview.history.escalated} escalated` : ''}
+                    {' · avg '}{preview.history.avg_tokens_in + preview.history.avg_tokens_out} tok
+                  </span>
+                )}
+              </div>
+            )}
+
             <textarea
               value={content}
               onChange={e => { setContent(e.target.value); setDirty(true); }}
@@ -185,6 +232,47 @@ export default function S18_Prompts() {
               </p>
               {msg && <p className="text-xs font-heading text-primary">{msg}</p>}
             </div>
+          </Card>
+
+          <Card title="A/B test two versions">
+            <p className="text-xs text-ink/60 mb-3">
+              Runs the last real input for this job through both versions, so you can see the
+              difference before saving anything. Costs two model calls.
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <select value={abA} onChange={e => setAbA(e.target.value)}
+                className="bg-white border-2 border-ink rounded-md px-2 py-1 font-body text-sm">
+                <option value="">version A</option>
+                {(detail?.versions || []).map(v => <option key={v} value={v}>v{v}</option>)}
+              </select>
+              <span className="text-sm text-ink/60">vs</span>
+              <select value={abB} onChange={e => setAbB(e.target.value)}
+                className="bg-white border-2 border-ink rounded-md px-2 py-1 font-body text-sm">
+                <option value="">version B</option>
+                {(detail?.versions || []).map(v => <option key={v} value={v}>v{v}</option>)}
+              </select>
+              <BlockButton variant="secondary" onClick={runAB}
+                disabled={abBusy || !abA || !abB || abA === abB || !detail?.versions?.length}>
+                {abBusy ? 'Running…' : 'Run A/B'}
+              </BlockButton>
+            </div>
+
+            {abResult && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {[abResult.a, abResult.b].map((side, i) => (
+                  <div key={i} className="border-2 border-ink/20 rounded-md p-2 bg-white">
+                    <p className="font-heading text-xs font-bold mb-1">
+                      v{side.version} {side.ok
+                        ? <span className="text-success">ok</span>
+                        : <span className="text-danger">failed</span>}
+                    </p>
+                    <pre className="text-xs whitespace-pre-wrap font-mono max-h-64 overflow-y-auto text-ink/80">
+                      {side.output || side.error}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
 
           <Card title={`Recent runs${selected ? ` — ${selected}` : ''}`}>
