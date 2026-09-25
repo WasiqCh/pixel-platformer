@@ -100,6 +100,13 @@ async def _generate_row(project_id, folder, ch_id, gen_id):
         await proj_db.close(); raise HTTPException(404, "Generation not found")
     row = dict(row)
 
+    # SCENES-MP4 P2-T02: svg rows live in the SVG lane (svg_path source, P2-T04
+    # generates; P2-T06 rasters into file_path). The Gemini PNG lane below is
+    # masters/poses only — never let it fill an svg row's file_path.
+    if row["kind"] == "svg":
+        await proj_db.close()
+        raise HTTPException(400, "SVG assets generate via the SVG pipeline (P2-T04), not the PNG lane.")
+
     ref_rel = None
     if row["kind"] == "pose":
         async with proj_db.execute("SELECT file_path FROM generations WHERE project_id=? AND kind='master' AND asset_ref=? AND status='ready'", (project_id, row["asset_ref"])) as cur:

@@ -320,7 +320,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P1-T07 | ✅ | uncommitted | flag_downstream_stale() flags scenes 30/30 via beats join; stale counts/clear/total include scenes (banner, zero frontend change); scene edits are leaves, no cascade |
 | P1-T08 | ✅ | uncommitted | Phase 1 gate PASS (audit-only, no code change): CH03_EP02 30/30 beats ≥1 qualified scene_plan row (58 rows, 58 ok, temp 0.5=high); 93/93 svg gens trace beat→scene→need, 107 needs = 14 matched + 93 svg, 0 gaps |
 | P2-T01 | ✅ | architect spike 2026-09-25 | Inkscape headless — `docs/scenes-mp4/DECISION_RASTER.md` |
-| P2-T02 | ⬜ | | |
+| P2-T02 | ✅ | uncommitted | svg_path TEXT on generations (PROJECT_SCHEMA + _ensure_column heal); 06_sheets/svg dir; svg guard in _generate_row; 93/93 svg rows round-trip, PNG absent |
 | P2-T03 | ⬜ | | |
 | P2-T04 | ⬜ | | |
 | P2-T05 | ⬜ | | |

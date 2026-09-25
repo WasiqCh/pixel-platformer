@@ -232,6 +232,9 @@ CREATE TABLE IF NOT EXISTS generations (
     title TEXT NOT NULL,
     prompt TEXT NOT NULL,
     file_path TEXT NOT NULL DEFAULT '',
+    -- SCENES-MP4 P2-T02: versioned SVG source (06_sheets/svg/<asset>_vN.svg,
+    -- nullable; file_path holds the rastered PNG once P2-T06 approves+rasters).
+    svg_path TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -303,4 +306,6 @@ async def init_project_db(db_conn):
     await _ensure_column(db_conn, "beat_elements", "scale", "REAL")
     # SCENES-MP4 P1-T05: per-row reasoning (acceptance: non-empty shot + reasoning).
     await _ensure_column(db_conn, "scenes", "reasoning", "TEXT")
+    # SCENES-MP4 P2-T02: svg source path (nullable; file_path stays the P2-T06 raster PNG).
+    await _ensure_column(db_conn, "generations", "svg_path", "TEXT")
     await db_conn.commit()

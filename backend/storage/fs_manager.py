@@ -30,6 +30,7 @@ def create_project_dirs(channel_id: str, project_id: str):
         "06_sheets/drafts", 
         "06_sheets/finals", 
         "06_sheets/editor_notes",
+        "06_sheets/svg",
         "07_beats/prompts", 
         "07_beats/one_offs",
         "08_handoff", 
