@@ -322,7 +322,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P2-T01 | ✅ | architect spike 2026-09-25 | Inkscape headless — `docs/scenes-mp4/DECISION_RASTER.md` |
 | P2-T02 | ✅ | uncommitted | svg_path TEXT on generations (PROJECT_SCHEMA + _ensure_column heal); 06_sheets/svg dir; svg guard in _generate_row; 93/93 svg rows round-trip, PNG absent |
 | P2-T03 | ✅ | uncommitted | svg_gen {high,0.5,no-stream} in JOB_MAP; recipe svg_gen_v1 (style+palette+outline 1.5-2.0% rule, prev_svg+fix_note); SvgGen schema (XML+viewBox/width/height, no script/ext-refs, reasoning non-empty); 3 dispatch trials live-gateway good ok (job_log 206) + bad rejected (207) + repair ok (208) |
-| P2-T04 | ⬜ | | |
+| P2-T04 | ✅ | 1104486 | POST /projects/{id}/generate/svg/{gen_id} (generation.py): live svg_gen dispatch → SvgGen validate → 06_sheets/svg/<asset>_vN.svg, status generated; failure → error+message, retry mints next version, never overwrites; svg_gen max_tokens 2000 (gateway free-route 256-cap proven via captest, T1 256/finish:length vs T2 997/finish:stop); CH03_EP02 live: gen97 v1+v2 (job_log 212/213), gen43 error→v1 (214), gen98 malformed-XML rejected (215), 90 rows untouched pending |
 | P2-T05 | ⬜ | | |
 | P2-T06 | ⬜ | | Needs P2-T01 first |
 | P2-T07 | ⬜ | | Phase 2 gate |
