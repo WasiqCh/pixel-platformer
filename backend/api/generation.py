@@ -1,6 +1,7 @@
 # backend/api/generation.py
 import asyncio
 import base64
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -9,7 +10,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from backend.core.llm_client import dispatch
 from backend.db.connection import get_app_db, get_project_db
+from backend.models.scene import SvgGen
 from backend.storage.fs_manager import get_project_dir
 
 router = APIRouter(tags=["generation"])
@@ -137,6 +140,140 @@ async def _generate_row(project_id, folder, ch_id, gen_id):
         await vault_put(ch_id, asset_key(row["title"]), vkind, row["title"], dest, project_id)
     await proj_db.commit(); await proj_db.close()
     return {"gen_id": gen_id, "status": "ready", "file_path": rel}
+
+
+# --- SCENES-MP4 P2-T04: single SVG generation (dispatch -> validate -> versioned file) ---
+
+_SVG_FALLBACK_DESCRIPTOR = "clean flat 2D animation, bold outlines, limited palette"
+
+
+def _sanitize_svg_base(raw: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", (raw or "").strip()).strip("_")
+    return base[:60] or "asset"
+
+
+def _next_svg_version(svg_dir, base: str) -> int:
+    pat = re.compile(rf"^{re.escape(base)}_v(\d+)\.svg$", re.IGNORECASE)
+    best = 0
+    try:
+        for p in svg_dir.iterdir():
+            m = pat.match(p.name)
+            if m:
+                try:
+                    best = max(best, int(m.group(1)))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return best + 1
+
+
+async def _svg_style_pack(ch_id: str) -> tuple[str, str]:
+    from backend.api.channels import DEFAULT_AVOID
+    db = await get_app_db()
+    async with db.execute("SELECT descriptor, avoid_list FROM channels WHERE id=?", (ch_id,)) as cur:
+        row = await cur.fetchone()
+    await db.close()
+    descriptor = (row["descriptor"] if row and row["descriptor"] else _SVG_FALLBACK_DESCRIPTOR)
+    avoid = (row["avoid_list"] if row and row["avoid_list"] else DEFAULT_AVOID)
+    return descriptor, avoid
+
+
+async def _generate_svg_row(project_id, folder, ch_id, gen_id):
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline (PNG lane handles masters/poses).")
+
+    # Asset kind/description: prefer the linked scene_assets need (has the
+    # validated kind + search_query); fall back to the generation prompt.
+    asset_kind, asset_desc = "prop", row["prompt"] or row["title"] or ""
+    try:
+        async with proj_db.execute(
+                "SELECT kind, search_query, name, reasoning FROM scene_assets WHERE generation_id=?",
+                (gen_id,)) as cur:
+            need = await cur.fetchone()
+        if need:
+            need = dict(need)
+            if (need.get("kind") or "").lower() in ("character", "prop", "place", "photo"):
+                asset_kind = need["kind"].lower()
+            bits = [need.get("name") or row["title"] or ""]
+            if need.get("search_query"):
+                bits.append(f"({need['search_query']})")
+            if row["prompt"]:
+                bits.append(f"— {row['prompt']}")
+            asset_desc = " ".join(b for b in bits if b)
+    except Exception:
+        pass
+
+    descriptor, avoid = await _svg_style_pack(ch_id)
+    context = {
+        "style_descriptor": descriptor,
+        "palette": [],
+        "asset_name": row["title"] or row["gen_label"] or f"gen{gen_id}",
+        "asset_kind": asset_kind,
+        "asset_description": asset_desc,
+        "previous_svg": "",
+        "fix_note": "",
+        "avoid_list": avoid,
+    }
+
+    try:
+        res = await dispatch("svg_gen", context, schema=SvgGen,
+                             project_id=project_id, channel_id=ch_id)
+    except Exception as e:
+        msg = f"dispatch crashed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg[:300], _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg[:300]}
+    if not res.get("ok"):
+        msg = str(res.get("error") or "svg_gen failed")[:300]
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg}
+
+    svg_text = (res["parsed"] or {}).get("svg") or ""
+    reasoning = (res["parsed"] or {}).get("reasoning") or ""
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    try:
+        ver = _next_svg_version(svg_dir, clean)
+        rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+        (svg_dir / f"{clean}_v{ver}.svg").write_text(svg_text, encoding="utf-8")
+    except Exception as e:
+        msg = f"write failed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg[:300], _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg[:300]}
+
+    await proj_db.execute(
+        "UPDATE generations SET svg_path=?, status='generated', error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+            "version": ver, "reasoning": reasoning}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}")
+async def generate_svg_one(project_id: str, gen_id: int):
+    folder, ch_id = await _proj(project_id)
+    return await _generate_svg_row(project_id, folder, ch_id, gen_id)
 
 
 @router.get("/projects/{project_id}/generations")

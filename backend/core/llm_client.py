@@ -59,7 +59,7 @@ JOB_MAP = {
     "overlay_text":        {"tier": "medium", "temp": 0.5, "stream": False},
     "scene_plan":          {"tier": "high",   "temp": 0.5, "stream": False},
     "asset_plan":          {"tier": "medium", "temp": 0.3, "stream": False},
-    "svg_gen":             {"tier": "high",   "temp": 0.5, "stream": False},
+    "svg_gen":             {"tier": "high",   "temp": 0.5, "stream": False, "max_tokens": 2000},
 }
 
 
@@ -107,19 +107,25 @@ def _model_for(tier: str) -> str:
     return s["models"]["high"] if s.get("use_single_model") else s["models"][tier]
 
 
-async def _chat(client, model, temp, messages, use_json=True):
-    """One chat call. Tries JSON mode first, falls back if endpoint rejects it."""
+async def _chat(client, model, temp, messages, use_json=True, max_tokens=None):
+    """One chat call. Tries JSON mode first, falls back if endpoint rejects it.
+
+    max_tokens=None preserves the gateway default for every existing job;
+    jobs that need long outputs (svg_gen: full SVG code in one JSON string)
+    set it via JOB_MAP. Without it the gateway caps free routes at 256
+    completion tokens (finish:length), which truncates any real SVG."""
+    extra = {"max_tokens": max_tokens} if max_tokens is not None else {}
     if use_json:
         try:
             resp = await client.chat.completions.create(
                 model=model, messages=messages, temperature=temp,
-                response_format={"type": "json_object"})
+                response_format={"type": "json_object"}, **extra)
         except Exception:
             resp = await client.chat.completions.create(
-                model=model, messages=messages, temperature=temp)
+                model=model, messages=messages, temperature=temp, **extra)
     else:
         resp = await client.chat.completions.create(
-            model=model, messages=messages, temperature=temp)
+            model=model, messages=messages, temperature=temp, **extra)
     usage = getattr(resp, "usage", None)
     return (resp.choices[0].message.content or "",
             getattr(usage, "prompt_tokens", None),
@@ -187,8 +193,10 @@ async def dispatch(job_type: str, context: dict, schema=None,
         ]
 
         start = time.time()
+        max_tokens = spec.get("max_tokens")
         try:
-            raw, t_in, t_out = await _chat(client, model, spec["temp"], messages)
+            raw, t_in, t_out = await _chat(client, model, spec["temp"], messages,
+                                           max_tokens=max_tokens)
         except Exception as e:
             await _log_job(job_type, model, spec["temp"], context, "", None,
                            None, None, 0, str(e), project_id, channel_id)
@@ -201,7 +209,8 @@ async def dispatch(job_type: str, context: dict, schema=None,
             messages.append({"role": "assistant", "content": raw})
             messages.append({"role": "user", "content":
                              f"Your output failed validation: {error}\nReturn ONLY corrected JSON."})
-            raw, t_in2, t_out2 = await _chat(client, model, spec["temp"], messages)
+            raw, t_in2, t_out2 = await _chat(client, model, spec["temp"], messages,
+                                             max_tokens=max_tokens)
             t_in = (t_in or 0) + (t_in2 or 0)
             t_out = (t_out or 0) + (t_out2 or 0)
             parsed, error = _validate(raw, schema)
@@ -212,7 +221,8 @@ async def dispatch(job_type: str, context: dict, schema=None,
                 esc_model = _escalation_target(spec, model)
                 if esc_model is not None:
                     try:
-                        raw, t_in3, t_out3 = await _chat(client, esc_model, spec["temp"], messages)
+                        raw, t_in3, t_out3 = await _chat(client, esc_model, spec["temp"], messages,
+                                                         max_tokens=max_tokens)
                         t_in = (t_in or 0) + (t_in3 or 0)
                         t_out = (t_out or 0) + (t_out3 or 0)
                         parsed, error = _validate(raw, schema)
