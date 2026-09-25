@@ -250,6 +250,27 @@ CREATE TABLE IF NOT EXISTS scenes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 23. scene_assets (SCENES-MP4 P1-T06: per-scene asset needs + library/svg resolution).
+-- Each need ends as EXACTLY ONE of library_ref set / needs_generate set
+-- (never neither, never both). Misses link out to generations (kind='svg').
+CREATE TABLE IF NOT EXISTS scene_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    beat_id TEXT NOT NULL REFERENCES beats(id),
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    search_query TEXT NOT NULL,
+    reasoning TEXT NOT NULL,
+    library_ref TEXT,
+    needs_generate BOOLEAN NOT NULL DEFAULT 0,
+    generation_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (
+        (library_ref IS NOT NULL AND needs_generate = 0)
+        OR (library_ref IS NULL AND needs_generate = 1)
+    )
+);
 """
 
 async def init_app_db(db_conn):

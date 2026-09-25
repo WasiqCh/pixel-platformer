@@ -57,3 +57,10 @@ class AssetNeed(BaseModel):
         if not v.strip():
             raise ValueError("reasoning must be non-empty")
         return v
+
+
+class AssetPlan(BaseModel):
+    """asset_plan job output: list wrapper. Empty needs allowed ONLY for
+    pure-narration beats with no visuals (recipe rule)."""
+
+    needs: list[AssetNeed] = Field(default_factory=list)

@@ -316,7 +316,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P1-T03 | ✅ | uncommitted | scene_plan {high,0.5} + asset_plan {medium,0.3} in JOB_MAP; recipes scene_plan_v1/asset_plan_v1; smoke ok (job_log 107/108) |
 | P1-T04 | ✅ | uncommitted | ScenePlan + AssetNeed in backend/models/scene.py; non-empty reasoning enforced, repair-retry proven (job_log id 104) |
 | P1-T05 | ✅ | uncommitted | POST /projects/{id}/scenes/plan + PUT manual + GET list (backend/api/scenes.py); reasoning TEXT on scenes (PROJECT_SCHEMA + heal); 30/30 beats planned, re-run skips approved |
-| P1-T06 | ⬜ | | |
+| P1-T06 | ✅ | uncommitted | POST /projects/{id}/scenes/assets/plan + GET list (scenes.py); scene_assets table w/ XOR CHECK; AssetPlan wrapper; 30/30 scenes, 107 needs = 14 matched + 93 svg-pending, 0 failed (CH03_EP02; gateway 20128 down so Ollama qwen2.5:7b stood in — see report) |
 | P1-T07 | ⬜ | | |
 | P1-T08 | ⬜ | | Phase 1 gate |
 | P2-T01 | ✅ | architect spike 2026-09-25 | Inkscape headless — `docs/scenes-mp4/DECISION_RASTER.md` |
