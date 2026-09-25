@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS beat_elements (
     id TEXT PRIMARY KEY, beat_id TEXT NOT NULL REFERENCES beats(id), asset_ref TEXT NOT NULL, layer TEXT NOT NULL,
     framing TEXT, prompt_text TEXT, refs_to_attach TEXT, editor_note TEXT, improv_note TEXT,
     is_one_off BOOLEAN NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL,
+    x REAL, y REAL, scale REAL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
@@ -273,4 +274,8 @@ async def init_project_db(db_conn):
     await db_conn.executescript(PROJECT_SCHEMA)
     # AI-chosen sprite-sheet actions per character (JSON list, 2-6 entries).
     await _ensure_column(db_conn, "characters", "actions", "TEXT")
+    # SCENES-MP4 P1-T02: placement fractions (0-1, nullable; NULL = fall back to framing text).
+    await _ensure_column(db_conn, "beat_elements", "x", "REAL")
+    await _ensure_column(db_conn, "beat_elements", "y", "REAL")
+    await _ensure_column(db_conn, "beat_elements", "scale", "REAL")
     await db_conn.commit()

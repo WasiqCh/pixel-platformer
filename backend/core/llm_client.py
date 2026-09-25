@@ -57,6 +57,8 @@ JOB_MAP = {
     "retention_analysis":  {"tier": "high",   "temp": 0.5, "stream": False},
     "lesson_proposal":     {"tier": "high",   "temp": 0.5, "stream": False},
     "overlay_text":        {"tier": "medium", "temp": 0.5, "stream": False},
+    "scene_plan":          {"tier": "high",   "temp": 0.5, "stream": False},
+    "asset_plan":          {"tier": "medium", "temp": 0.3, "stream": False},
 }
 
 
