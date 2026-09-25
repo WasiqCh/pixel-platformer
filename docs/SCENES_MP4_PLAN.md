@@ -321,7 +321,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P1-T08 | ✅ | uncommitted | Phase 1 gate PASS (audit-only, no code change): CH03_EP02 30/30 beats ≥1 qualified scene_plan row (58 rows, 58 ok, temp 0.5=high); 93/93 svg gens trace beat→scene→need, 107 needs = 14 matched + 93 svg, 0 gaps |
 | P2-T01 | ✅ | architect spike 2026-09-25 | Inkscape headless — `docs/scenes-mp4/DECISION_RASTER.md` |
 | P2-T02 | ✅ | uncommitted | svg_path TEXT on generations (PROJECT_SCHEMA + _ensure_column heal); 06_sheets/svg dir; svg guard in _generate_row; 93/93 svg rows round-trip, PNG absent |
-| P2-T03 | ⬜ | | |
+| P2-T03 | ✅ | uncommitted | svg_gen {high,0.5,no-stream} in JOB_MAP; recipe svg_gen_v1 (style+palette+outline 1.5-2.0% rule, prev_svg+fix_note); SvgGen schema (XML+viewBox/width/height, no script/ext-refs, reasoning non-empty); 3 dispatch trials live-gateway good ok (job_log 206) + bad rejected (207) + repair ok (208) |
 | P2-T04 | ⬜ | | |
 | P2-T05 | ⬜ | | |
 | P2-T06 | ⬜ | | Needs P2-T01 first |

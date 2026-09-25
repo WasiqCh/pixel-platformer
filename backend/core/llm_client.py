@@ -59,6 +59,7 @@ JOB_MAP = {
     "overlay_text":        {"tier": "medium", "temp": 0.5, "stream": False},
     "scene_plan":          {"tier": "high",   "temp": 0.5, "stream": False},
     "asset_plan":          {"tier": "medium", "temp": 0.3, "stream": False},
+    "svg_gen":             {"tier": "high",   "temp": 0.5, "stream": False},
 }
 
 
