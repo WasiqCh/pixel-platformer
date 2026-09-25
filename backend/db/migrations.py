@@ -236,6 +236,17 @@ CREATE TABLE IF NOT EXISTS generations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 22. scenes (SCENES-MP4 P1-T01: per-beat scene plan, leaf until Phase 3)
+CREATE TABLE IF NOT EXISTS scenes (
+    beat_id TEXT PRIMARY KEY REFERENCES beats(id),
+    place_asset_ref TEXT,
+    shot TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    stale BOOLEAN NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 async def init_app_db(db_conn):
