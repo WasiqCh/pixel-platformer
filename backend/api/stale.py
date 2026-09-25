@@ -2,9 +2,9 @@
 """Stale tracking.
 
 When a locked script changes, backend/core/ripple.py flags the downstream
-artifacts (characters, variants, environments, world records, beats, sheets)
-as stale. This module makes that visible and gives one-click ways to deal
-with it, instead of having to visit each stage and remember what changed.
+artifacts (characters, variants, environments, world records, beats, scenes,
+sheets) as stale. This module makes that visible and gives one-click ways to
+deal with it, instead of having to visit each stage and remember what changed.
 """
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,6 +22,9 @@ STAGE_TABLES = {
     "locations": ["environments", "env_variations"],
     "world": ["world_records"],
     "beats": ["beats"],
+    # SCENES-MP4 P1-T07: scenes are leaves until Phase 3 (no project_id
+    # column — keyed by beat_id, counted/cleared globally like variants).
+    "scenes": ["scenes"],
     "sheets": ["sheets"],
 }
 
@@ -29,8 +32,8 @@ STAGE_TABLES = {
 # database, so every row already belongs to this project.
 TABLES_WITH_PROJECT_ID = {"characters", "environments", "world_records", "beats"}
 
-# Order matters: cast feeds variants, locations feed sheets, etc.
-STAGE_ORDER = ["cast", "variants", "locations", "world", "beats", "sheets"]
+# Order matters: cast feeds variants, locations feed sheets, beats feed scenes.
+STAGE_ORDER = ["cast", "variants", "locations", "world", "beats", "scenes", "sheets"]
 
 
 def _now():
@@ -125,6 +128,7 @@ async def reextract_stale(project_id: str, stage: Optional[str] = None):
     from backend.api.beats import extract_beats
     from backend.api.characters import extract_characters
     from backend.api.environments import extract_environments
+    from backend.api.scenes import plan_scenes
     from backend.api.sheets import generate_sheets
     from backend.api.variants import extract_variants
     from backend.api.world import scan_world
@@ -135,6 +139,8 @@ async def reextract_stale(project_id: str, stage: Optional[str] = None):
         "locations": extract_environments,
         "world": scan_world,
         "beats": extract_beats,
+        # SCENES-MP4 P1-T07: stale scenes re-plan (skips approved rows).
+        "scenes": plan_scenes,
         "sheets": generate_sheets,
     }
 
