@@ -102,8 +102,9 @@ Exit gate: P1-T08 passes. No frontend work in this phase.
 **P1-T01 — `scenes` table.**
 Add to `PROJECT_SCHEMA` (`backend/db/migrations.py`):
 `scenes(beat_id TEXT PRIMARY KEY REFERENCES beats(id), place_asset_ref TEXT, shot TEXT,
-status TEXT NOT NULL DEFAULT 'draft', stale BOOLEAN NOT NULL DEFAULT 0,
+reasoning TEXT, status TEXT NOT NULL DEFAULT 'draft', stale BOOLEAN NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`.
+(`reasoning` added in P1-T05 — review UI reads it off the row; T02 `_ensure_column` precedent.)
 *Acceptance: delete `project.db`, boot, table exists; boot again, no error, data intact.
 Evidence: `.schema scenes` output before/after.*
 
@@ -314,7 +315,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P1-T02 | ✅ | uncommitted | x/y/scale REAL nullable on beat_elements; PROJECT_SCHEMA + _ensure_column heal |
 | P1-T03 | ✅ | uncommitted | scene_plan {high,0.5} + asset_plan {medium,0.3} in JOB_MAP; recipes scene_plan_v1/asset_plan_v1; smoke ok (job_log 107/108) |
 | P1-T04 | ✅ | uncommitted | ScenePlan + AssetNeed in backend/models/scene.py; non-empty reasoning enforced, repair-retry proven (job_log id 104) |
-| P1-T05 | ⬜ | | |
+| P1-T05 | ✅ | uncommitted | POST /projects/{id}/scenes/plan + PUT manual + GET list (backend/api/scenes.py); reasoning TEXT on scenes (PROJECT_SCHEMA + heal); 30/30 beats planned, re-run skips approved |
 | P1-T06 | ⬜ | | |
 | P1-T07 | ⬜ | | |
 | P1-T08 | ⬜ | | Phase 1 gate |

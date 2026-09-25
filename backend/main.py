@@ -28,6 +28,7 @@ from backend.api import voiceover as voiceover_api
 from backend.api import recipes as recipes_api
 from backend.api import stale as stale_api
 from backend.api import dashboard as dashboard_api  # <--- ADD
+from backend.api import scenes as scenes_api  # <--- ADD
 
 
 
@@ -70,4 +71,5 @@ app.include_router(voiceover_api.router, prefix="/api/v1")  # <--- ADD
 app.include_router(recipes_api.router, prefix="/api/v1")
 app.include_router(stale_api.router, prefix="/api/v1")
 app.include_router(dashboard_api.router, prefix="/api/v1")
+app.include_router(scenes_api.router, prefix="/api/v1")
 

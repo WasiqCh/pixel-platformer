@@ -239,10 +239,12 @@ CREATE TABLE IF NOT EXISTS generations (
 );
 
 -- 22. scenes (SCENES-MP4 P1-T01: per-beat scene plan, leaf until Phase 3)
+-- P1-T05: reasoning added (acceptance needs non-empty shot + reasoning per row).
 CREATE TABLE IF NOT EXISTS scenes (
     beat_id TEXT PRIMARY KEY REFERENCES beats(id),
     place_asset_ref TEXT,
     shot TEXT,
+    reasoning TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     stale BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -278,4 +280,6 @@ async def init_project_db(db_conn):
     await _ensure_column(db_conn, "beat_elements", "x", "REAL")
     await _ensure_column(db_conn, "beat_elements", "y", "REAL")
     await _ensure_column(db_conn, "beat_elements", "scale", "REAL")
+    # SCENES-MP4 P1-T05: per-row reasoning (acceptance: non-empty shot + reasoning).
+    await _ensure_column(db_conn, "scenes", "reasoning", "TEXT")
     await db_conn.commit()
