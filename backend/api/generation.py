@@ -179,23 +179,33 @@ async def _svg_style_pack(ch_id: str) -> tuple[str, str]:
     return descriptor, avoid
 
 
-async def _generate_svg_row(project_id, folder, ch_id, gen_id):
-    base = get_project_dir(ch_id, folder.split("_")[1])
-    svg_dir = base / "06_sheets" / "svg"
-    svg_dir.mkdir(parents=True, exist_ok=True)
-    proj_db = await get_project_db(folder)
-    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
-        row = await cur.fetchone()
-    if not row:
-        await proj_db.close()
-        raise HTTPException(404, "Generation not found")
-    row = dict(row)
-    if row["kind"] != "svg":
-        await proj_db.close()
-        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline (PNG lane handles masters/poses).")
+def _build_svg_context(descriptor: str, avoid: str, asset_name: str,
+                       asset_kind: str, asset_desc: str,
+                       previous_svg: str = "", fix_note: str = "") -> dict:
+    """SCENES-MP4 P2-T04/T05 shared context builder (extend, don't duplicate).
 
-    # Asset kind/description: prefer the linked scene_assets need (has the
-    # validated kind + search_query); fall back to the generation prompt.
+    Single place that shapes the svg_gen context pack: style + asset desc
+    always present; previous_svg + fix_note empty on first gen (T04), filled
+    on improve (T05) per the recipe's retry/improve rule.
+    """
+    return {
+        "style_descriptor": descriptor,
+        "palette": [],
+        "asset_name": asset_name,
+        "asset_kind": asset_kind,
+        "asset_description": asset_desc,
+        "previous_svg": previous_svg or "",
+        "fix_note": fix_note or "",
+        "avoid_list": avoid,
+    }
+
+
+async def _svg_asset_info(proj_db, row: dict, gen_id: int) -> tuple[str, str, str]:
+    """Shared asset-kind/description/name lookup (T04 first-gen + T05 improve).
+
+    Prefers the linked scene_assets need (validated kind + search_query);
+    falls back to the generation prompt. Returns (kind, desc, name).
+    """
     asset_kind, asset_desc = "prop", row["prompt"] or row["title"] or ""
     try:
         async with proj_db.execute(
@@ -214,18 +224,47 @@ async def _generate_svg_row(project_id, folder, ch_id, gen_id):
             asset_desc = " ".join(b for b in bits if b)
     except Exception:
         pass
+    asset_name = row["title"] or row["gen_label"] or f"gen{gen_id}"
+    return asset_kind, asset_desc, asset_name
 
+
+def _list_svg_versions(svg_dir, base: str) -> list[int]:
+    pat = re.compile(rf"^{re.escape(base)}_v(\d+)\.svg$", re.IGNORECASE)
+    out = []
+    try:
+        for p in svg_dir.iterdir():
+            m = pat.match(p.name)
+            if m:
+                try:
+                    out.append(int(m.group(1)))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return sorted(out)
+
+
+async def _generate_svg_row(project_id, folder, ch_id, gen_id):
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline (PNG lane handles masters/poses).")
+
+    # P2-T04 context via the shared builder (T05 extends the same call with
+    # previous_svg + fix_note — do not inline a second dict literal).
+    asset_kind, asset_desc, asset_name = await _svg_asset_info(proj_db, row, gen_id)
     descriptor, avoid = await _svg_style_pack(ch_id)
-    context = {
-        "style_descriptor": descriptor,
-        "palette": [],
-        "asset_name": row["title"] or row["gen_label"] or f"gen{gen_id}",
-        "asset_kind": asset_kind,
-        "asset_description": asset_desc,
-        "previous_svg": "",
-        "fix_note": "",
-        "avoid_list": avoid,
-    }
+    context = _build_svg_context(descriptor, avoid, asset_name,
+                                 asset_kind, asset_desc)
 
     try:
         res = await dispatch("svg_gen", context, schema=SvgGen,
@@ -274,6 +313,161 @@ async def _generate_svg_row(project_id, folder, ch_id, gen_id):
 async def generate_svg_one(project_id: str, gen_id: int):
     folder, ch_id = await _proj(project_id)
     return await _generate_svg_row(project_id, folder, ch_id, gen_id)
+
+
+# --- SCENES-MP4 P2-T05: improve-with-note (-> _v(N+1)) + revert (pointer only) ---
+
+class SvgImproveRequest(BaseModel):
+    note: str
+
+
+class SvgRevertRequest(BaseModel):
+    version: int
+
+
+async def _improve_svg_row(project_id, folder, ch_id, gen_id, note: str):
+    note = (note or "").strip()
+    if not note:
+        raise HTTPException(400, "note must be non-empty (what should change in the next version?)")
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    if not row["svg_path"]:
+        await proj_db.close()
+        raise HTTPException(400, "No SVG version yet — generate once before improving.")
+    prev_file = base / row["svg_path"]
+    if not prev_file.exists():
+        await proj_db.close()
+        raise HTTPException(400, f"Previous SVG file missing on disk: {row['svg_path']}")
+    try:
+        previous_svg = prev_file.read_text(encoding="utf-8")
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(400, f"Cannot read previous SVG: {type(e).__name__}")
+    if not previous_svg.strip():
+        await proj_db.close()
+        raise HTTPException(400, "Previous SVG is empty — cannot improve.")
+
+    # Same context construction as first-gen (T04), extended with the
+    # previous code + the user's fix-note (recipe's retry/improve rule).
+    asset_kind, asset_desc, asset_name = await _svg_asset_info(proj_db, row, gen_id)
+    descriptor, avoid = await _svg_style_pack(ch_id)
+    context = _build_svg_context(descriptor, avoid, asset_name,
+                                 asset_kind, asset_desc,
+                                 previous_svg=previous_svg, fix_note=note)
+
+    try:
+        res = await dispatch("svg_gen", context, schema=SvgGen,
+                             project_id=project_id, channel_id=ch_id)
+    except Exception as e:
+        msg = f"dispatch crashed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg[:300], _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg[:300]}
+    if not res.get("ok"):
+        msg = str(res.get("error") or "svg_gen failed")[:300]
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg}
+
+    svg_text = (res["parsed"] or {}).get("svg") or ""
+    reasoning = (res["parsed"] or {}).get("reasoning") or ""
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    try:
+        ver = _next_svg_version(svg_dir, clean)
+        rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+        (svg_dir / f"{clean}_v{ver}.svg").write_text(svg_text, encoding="utf-8")
+    except Exception as e:
+        msg = f"write failed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg[:300], _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg[:300]}
+
+    await proj_db.execute(
+        "UPDATE generations SET svg_path=?, status='generated', error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+            "version": ver, "reasoning": reasoning,
+            "previous_svg_path": row["svg_path"]}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/improve")
+async def improve_svg_one(project_id: str, gen_id: int, data: SvgImproveRequest):
+    folder, ch_id = await _proj(project_id)
+    return await _improve_svg_row(project_id, folder, ch_id, gen_id, data.note)
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/revert")
+async def revert_svg_one(project_id: str, gen_id: int, data: SvgRevertRequest):
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    if not data.version or data.version < 1:
+        await proj_db.close()
+        raise HTTPException(400, "version must be a positive integer (target _vN).")
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    rel = f"06_sheets/svg/{clean}_v{data.version}.svg"
+    if not (svg_dir / f"{clean}_v{data.version}.svg").exists():
+        await proj_db.close()
+        have = _list_svg_versions(svg_dir, clean)
+        raise HTTPException(404, f"Version v{data.version} not on disk (have versions {have}).")
+    # Revert = move the newest pointer back; history files stay intact.
+    await proj_db.execute(
+        "UPDATE generations SET svg_path=?, status='generated', error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+            "version": data.version}
+
+
+@router.get("/projects/{project_id}/generate/svg/{gen_id}/versions")
+async def list_svg_versions(project_id: str, gen_id: int):
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT gen_label, asset_ref, svg_path, status FROM generations WHERE id=? AND project_id=?",
+                               (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    await proj_db.close()
+    if not row:
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    clean = _sanitize_svg_base(row["gen_label"] or row["asset_ref"] or f"gen{gen_id}")
+    vers = _list_svg_versions(svg_dir, clean)
+    return {"gen_id": gen_id, "current_svg_path": row["svg_path"], "status": row["status"],
+            "versions": [f"06_sheets/svg/{clean}_v{v}.svg" for v in vers]}
 
 
 @router.get("/projects/{project_id}/generations")
