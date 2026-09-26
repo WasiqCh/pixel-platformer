@@ -323,6 +323,11 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
 - **D7 quality re-gen pass.** Entire asset base is stand-in quality (qwen era); re-run
   generation + approval against real models before any real video. Machinery exists
   (re-plan replace, improve, revert, hash-cache raster).
+- **D8 pipeline buttons (owner request 2026-09-27 — highest priority, current pain).**
+  The new pipeline's triggers have no UI (Phase 1 was API-only): add Beat Board
+  buttons in click order — Plan scenes → Plan assets → Generate-all SVGs →
+  Render + progress bar — each calling its existing endpoint with busy/disable
+  states and honest errors. No new endpoints, no logic changes, frontend only.
 
 ### D4 — LOCAL KOKORO VOICE (owner priority; implement before D1–D3/D5–D7)
 
