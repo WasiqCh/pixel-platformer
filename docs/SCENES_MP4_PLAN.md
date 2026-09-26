@@ -308,8 +308,11 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
 - **D4 local Kokoro voice.** Free in-app narration, per beat, automatic timing. The
   default answer for cloud cost + laziness. Ticketed below as D4-T01 → T02
   (owner priority 2026-09-26 — implement before D1–D3/D5–D7).
-- **D5 Setup screen.** Green ticks + one-click install for Inkscape/ffmpeg (winget),
-  runtime probing already in code — never ask a layman to type a path. For teammate
+- **D5 Setup screen.** Green ticks + one-click install for EVERYTHING a fresh machine
+  needs — Inkscape/ffmpeg (winget) AND Kokoro (pip packages + weights download +
+  espeak check, per D4-T01 findings) — runtime probing already in code for
+  Inkscape/ffmpeg; add the same probe-then-install discipline for voice deps.
+  Never ask a layman to type a path or pip-install anything. For teammate
   onboarding (fresh `data/` per machine is expected — gitignored by design).
 - **D6 whole-audio align.** One uploaded audio file → Whisper word timestamps →
   force-align against the locked script (port `force_align_script` from
