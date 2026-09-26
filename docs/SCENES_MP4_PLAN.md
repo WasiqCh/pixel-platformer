@@ -324,10 +324,7 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
   generation + approval against real models before any real video. Machinery exists
   (re-plan replace, improve, revert, hash-cache raster).
 - **D8 pipeline buttons (owner request 2026-09-27 — highest priority, current pain).**
-  The new pipeline's triggers have no UI (Phase 1 was API-only): add Beat Board
-  buttons in click order — Plan scenes → Plan assets → Generate-all SVGs →
-  Render + progress bar — each calling its existing endpoint with busy/disable
-  states and honest errors. No new endpoints, no logic changes, frontend only.
+  Ticketed below as D8-T01 (single frontend-only ticket).
 
 ### D4 — LOCAL KOKORO VOICE (owner priority; implement before D1–D3/D5–D7)
 
@@ -360,6 +357,30 @@ per provider (Gemini `Kore` vs Kokoro voices) — store per-provider, never mix.
 *Acceptance: same project voiced twice (once per provider) → both produce 30
 WAVs + measured durations, gate passes on either, render works on either;
 Gemini path byte-identical behavior to today (no regression).*
+
+### D8 — PIPELINE BUTTONS (owner priority; unblocks the owner + Dawood)
+
+The new pipeline's triggers have no UI (Phase 1 was API-only). One frontend-only
+ticket: Beat Board buttons in click order, each calling its EXISTING endpoint
+(no new endpoints, no logic changes).
+
+**D8-T01 — Pipeline button row on the Beat Board.**
+Add, above the beat list, in this order: ① Plan scenes
+(`POST /projects/{id}/scenes/plan`) → ② Plan assets
+(`POST /projects/{id}/scenes/assets/plan`) → ③ Generate-all SVGs (loop over the
+project's pending `kind='svg'` generations calling existing
+`POST /projects/{id}/generate/svg/{gen_id}` sequentially — do NOT route svg rows
+through `POST /generate/all`, which is the PNG lane and 400s them) →
+④ Render (`POST /projects/{id}/render`, then poll existing
+`GET /projects/{id}/render/status` for a live progress bar) + ⑤ Cancel
+(`POST /projects/{id}/render/cancel`, visible only while running).
+Rules: busy disables the row (no double-fire); every response renders an honest
+inline message (counts from the JSON, e.g. "30 planned, 2 failed" — never a bare
+"done"); 409 from render shows the gate message verbatim with its fix list;
+follow the existing `fetch('/api/v1/...')` + `safeJson` + `BlockButton` pattern.
+*Acceptance: on a test project, click ①→④ in order with no console errors and
+no terminal/API tools; busy states prevent re-click mid-run; render progress
+bar reaches done and names the final MP4; `npm run lint` 0 errors.*
 
 ---
 
