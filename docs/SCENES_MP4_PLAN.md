@@ -431,6 +431,32 @@ follow the existing `fetch('/api/v1/...')` + `safeJson` + `BlockButton` pattern.
 no terminal/API tools; busy states prevent re-click mid-run; render progress
 bar reaches done and names the final MP4; `npm run lint` 0 errors.*
 
+### D7 — QUALITY RE-GEN PASS (owner priority 2026-09-27; after D1+D2)
+
+Why: the entire asset base is stand-in quality (qwen era, crude v1 placeholders).
+This pass redraws every SVG against real models and re-approves the project.
+Two tickets, in order. Run both against the owner's chosen High model and record
+which model in the report (quality evidence, not just structural).
+
+**D7-T01 — Bulk SVG re-generate (backend).**
+`POST /projects/{id}/generate/svg/bulk {only: 'non-final'}`: sequential loop
+over `kind='svg'` rows not yet final, calling the existing per-row generate
+(new version each, never overwrite) with per-row crash isolation (one gen's
+failure lands in its error field, never kills the batch — mirrors the PNG-lane
+`generate/all` shape but stays in the SVG lane). Returns summary
+(regenerated/failed/skipped-final counts + per-row versions). No frontend.
+*Acceptance: all non-final svg rows gain exactly one new version from the
+recorded model (prove via job_log model field, not just counts); failed rows
+carry messages; previously-final rows untouched.*
+
+**D7-T02 — Approval sweep + quality gate (UI-assisted audit).**
+Approve every new version (existing Library/Assets approve buttons — human eyes
+on all of them, crude ones get improve-with-note instead of approve), then
+verify: all svg `final` with PNGs on disk, all 30 previews fresh (hashes differ
+from the qwen era), render gate passes, one test MP4 renders clean.
+*Acceptance: 107/107 final with real-model job_log rows; previews 30/30 fresh;
+render check green; MP4 plays. THIS is the "no more placeholders" stamp.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
