@@ -1,7 +1,12 @@
 # backend/api/generation.py
 import asyncio
 import base64
+import glob as _glob
+import hashlib
+import os
 import re
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -18,6 +23,72 @@ from backend.storage.fs_manager import get_project_dir
 router = APIRouter(tags=["generation"])
 
 _RUNNING = {"project": None}
+
+# SCENES-MP4 P2-T06: Inkscape probe (DECISION_RASTER §18 rules 1-2).
+# Order: INKSCAPE_PATH env -> PATH (inkscape) -> MSIX location glob.
+# The MSIX pattern keeps the version wildcarded (version-pinned path WILL
+# break on update — never hard-code the full path). The Appx fallback below
+# queries the package manager for the live InstallLocation for the same reason.
+_INKSCAPE_MSIX_GLOB = (
+    r"C:\Program Files\WindowsApps\25415Inkscape.Inkscape_*"
+    r"\VFS\ProgramFilesX64\Inkscape\bin\inkscape.exe"
+)
+
+
+def _probe_inkscape() -> tuple[str, str, list[str]]:
+    """Probe for the Inkscape headless binary. Returns (path, source, tried).
+
+    source is one of 'env' | 'PATH' | 'MSIX-glob' | 'MSIX-appx'.
+    tried lists every location checked (for the clear-error rule).
+    Raises FileNotFoundError naming every location tried when not found.
+    """
+    tried: list[str] = []
+    env = (os.environ.get("INKSCAPE_PATH") or "").strip().strip('"')
+    if env:
+        tried.append(f"INKSCAPE_PATH={env}")
+        if os.path.isfile(env):
+            return env, "env", tried
+        tried.append(f"INKSCAPE_PATH missing on disk: {env}")
+    else:
+        tried.append("INKSCAPE_PATH=(unset)")
+    which = shutil.which("inkscape")
+    tried.append(f"PATH:inkscape={'found ' + which if which else 'not found'}")
+    if which and os.path.isfile(which):
+        return which, "PATH", tried
+    try:
+        hits = sorted(_glob.glob(_INKSCAPE_MSIX_GLOB))
+    except Exception as e:
+        hits = []
+        tried.append(f"MSIX glob failed: {type(e).__name__}: {e}")
+    tried.append(f"MSIX glob {_INKSCAPE_MSIX_GLOB} -> {len(hits)} hit(s)")
+    for h in hits:
+        if os.path.isfile(h):
+            return h, "MSIX-glob", tried
+    # WindowsApps directory listing is permission-gated (glob can return []
+    # even when the package exists), so resolve via the package manager —
+    # no version hard-coded, uses the live InstallLocation.
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-AppxPackage -Name '*Inkscape*' | Select-Object -ExpandProperty InstallLocation"],
+            capture_output=True, text=True, timeout=10)
+        locs = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+        tried.append(f"MSIX AppxPackage InstallLocation -> {locs if locs else 'none'}")
+        for loc in locs:
+            cand = os.path.join(loc, "VFS", "ProgramFilesX64", "Inkscape", "bin", "inkscape.exe")
+            if os.path.isfile(cand):
+                return cand, "MSIX-appx", tried
+            tried.append(f"MSIX candidate missing: {cand}")
+    except Exception as e:
+        tried.append(f"MSIX Appx query failed: {type(e).__name__}: {e}")
+    raise FileNotFoundError(
+        "Inkscape not found. Tried: " + " | ".join(tried))
+
+
+def _svg_content_hash(data: bytes) -> tuple[str, str]:
+    """Hash-keyed cache identity: full sha256 + 12-char short for filenames."""
+    full = hashlib.sha256(data).hexdigest()
+    return full, full[:12]
 
 
 class ImageSettings(BaseModel):
@@ -468,6 +539,140 @@ async def list_svg_versions(project_id: str, gen_id: int):
     vers = _list_svg_versions(svg_dir, clean)
     return {"gen_id": gen_id, "current_svg_path": row["svg_path"], "status": row["status"],
             "versions": [f"06_sheets/svg/{clean}_v{v}.svg" for v in vers]}
+
+
+# --- SCENES-MP4 P2-T06: approve -> raster PNG (hash-keyed cache) + finalize ---
+# Status ladder: generated -> approved -> final. Approve rasterizes the current
+# svg_path into 06_sheets/raster/<base>_<hash12>.png via Inkscape headless;
+# identical SVG bytes = cache hit (no re-raster). file_path holds the PNG so
+# the existing GET .../generations/{gen_id}/image endpoint serves the render.
+# Approval UI shows that PNG, never the SVG source.
+
+_RASTER_W, _RASTER_H = 1920, 1080
+
+
+async def _approve_svg_row(project_id, folder, ch_id, gen_id):
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    raster_dir = base / "06_sheets" / "raster"
+    raster_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    if not row["svg_path"]:
+        await proj_db.close()
+        raise HTTPException(400, "No SVG version yet — generate once before approving.")
+    svg_file = base / row["svg_path"]
+    if not svg_file.exists():
+        await proj_db.close()
+        raise HTTPException(400, f"SVG file missing on disk: {row['svg_path']}")
+    try:
+        svg_bytes = svg_file.read_bytes()
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(400, f"Cannot read SVG: {type(e).__name__}")
+    if not svg_bytes.strip():
+        await proj_db.close()
+        raise HTTPException(400, "SVG is empty — cannot approve.")
+    full_hash, short = _svg_content_hash(svg_bytes)
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    rel = f"06_sheets/raster/{clean}_{short}.png"
+    dest = base / rel
+
+    # Cache hit: PNG for these exact bytes already on disk — no re-raster.
+    # Keep 'final' final on re-approve (don't demote); otherwise approved.
+    if dest.exists() and dest.stat().st_size > 0:
+        target = "final" if row["status"] == "final" and row["file_path"] == rel else "approved"
+        await proj_db.execute(
+            "UPDATE generations SET file_path=?, status=?, error='', updated_at=? WHERE id=?",
+            (rel, target, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": target, "svg_path": row["svg_path"],
+                "file_path": rel, "svg_hash": full_hash, "cached": True,
+                "raster_path": rel}
+
+    try:
+        inkscape, source, tried = _probe_inkscape()
+    except FileNotFoundError as e:
+        msg = str(e)[:300]
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg}
+    cmd = [inkscape, str(svg_file), "--export-type=png",
+           f"--export-filename={dest}", "-w", str(_RASTER_W), "-h", str(_RASTER_H)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        msg = f"raster crashed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg[:300], _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg[:300]}
+    if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        err = (r.stderr or r.stdout or f"exit {r.returncode}")[-250:]
+        msg = f"inkscape failed (exit {r.returncode}): {err}"[:300]
+        await proj_db.execute("UPDATE generations SET status='error', error=?, updated_at=? WHERE id=?",
+                              (msg, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "error", "error": msg}
+    await proj_db.execute(
+        "UPDATE generations SET file_path=?, status='approved', error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "approved", "svg_path": row["svg_path"],
+            "file_path": rel, "svg_hash": full_hash, "cached": False,
+            "raster_path": rel, "inkscape_source": source}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/approve")
+async def approve_svg_one(project_id: str, gen_id: int):
+    folder, ch_id = await _proj(project_id)
+    return await _approve_svg_row(project_id, folder, ch_id, gen_id)
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/finalize")
+async def finalize_svg_one(project_id: str, gen_id: int):
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    if row["status"] == "final":
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "final", "file_path": row["file_path"]}
+    if row["status"] != "approved":
+        await proj_db.close()
+        raise HTTPException(400, f"Approve first (status is '{row['status']}', need 'approved').")
+    if not row["file_path"] or not (base / row["file_path"]).exists():
+        await proj_db.close()
+        raise HTTPException(400, f"Raster PNG missing on disk: {row['file_path'] or '(none)'} — re-approve.")
+    await proj_db.execute(
+        "UPDATE generations SET status='final', error='', updated_at=? WHERE id=?",
+        (_now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "final", "file_path": row["file_path"]}
 
 
 @router.get("/projects/{project_id}/generations")

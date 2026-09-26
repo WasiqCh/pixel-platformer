@@ -76,6 +76,24 @@ export default function S11_Library({ currentProject }) {
     refreshGens(); refresh();
   };
 
+  // SCENES-MP4 P2-T06: SVG approve -> raster PNG (hash cache) + finalize.
+  // Approval UI shows the PNG render via the existing image endpoint, never
+  // the SVG source (render is the only feedback that counts).
+  const approveSvg = async (g) => {
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${g.id}/approve`, { method: 'POST' });
+    const d = await safeJson(res);
+    if (!res.ok) { alert('Approve failed:\n\n' + (d.detail || 'Unknown')); return; }
+    if (d.status === 'error') alert('Raster error:\n' + d.error);
+    refreshGens();
+  };
+
+  const finalizeSvg = async (g) => {
+    const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${g.id}/finalize`, { method: 'POST' });
+    const d = await safeJson(res);
+    if (!res.ok) { alert('Finalize failed:\n\n' + (d.detail || 'Unknown')); return; }
+    refreshGens();
+  };
+
   const genAll = async () => {
     const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/all`, { method: 'POST' });
     const d = await safeJson(res);
@@ -349,12 +367,12 @@ export default function S11_Library({ currentProject }) {
           )}
           {gens.map(g => (
             <div key={g.id} className="p-2 border-2 border-ink/20 rounded-md bg-white flex items-center gap-3">
-              {g.status === 'ready' ? (
+              {g.file_path ? (
                 <img src={`/api/v1/projects/${currentProject.id}/generations/${g.id}/image`} alt={g.gen_label}
                   className="w-14 h-14 object-cover rounded border border-ink/30" />
               ) : (
                 <div className="w-14 h-14 rounded border border-ink/20 bg-panel flex items-center justify-center text-lg">
-                  {g.kind === 'master' ? '🖼️' : '🎭'}
+                  {g.kind === 'master' ? '🖼️' : g.kind === 'svg' ? '🧾' : '🎭'}
                 </div>
               )}
               <div className="flex-1 min-w-0">
@@ -363,14 +381,27 @@ export default function S11_Library({ currentProject }) {
                 </p>
                 <p className="text-xs font-body text-ink/60 truncate">{g.prompt}</p>
                 {g.status === 'error' && <p className="text-xs text-danger truncate" title={g.error}>⚠ {g.error}</p>}
+                {g.kind === 'svg' && g.svg_path && <p className="text-xs font-body text-ink/40 truncate" title={g.svg_path}>svg: {g.svg_path.split('/').pop()}</p>}
               </div>
               <span className={`text-xs font-bold px-2 py-1 rounded border-2 ${
-                g.status === 'ready' ? 'border-success text-success bg-success/10'
+                g.status === 'ready' || g.status === 'final' ? 'border-success text-success bg-success/10'
+                : g.status === 'approved' ? 'border-info text-info bg-info/10'
                 : g.status === 'error' ? 'border-danger text-danger bg-danger/10'
                 : 'border-ink/30 text-ink/50'}`}>
                 {g.status.toUpperCase()}
               </span>
-              <BlockButton variant="secondary" onClick={() => genOne(g)} disabled={running}>▶</BlockButton>
+              {g.kind === 'svg' ? (
+                <>
+                  <BlockButton variant="secondary" onClick={() => approveSvg(g)}
+                    title="Approve: raster SVG to PNG via Inkscape (hash cache)">✓</BlockButton>
+                  {g.status === 'approved' && (
+                    <BlockButton variant="secondary" onClick={() => finalizeSvg(g)}
+                      title="Promote approved render to final">★</BlockButton>
+                  )}
+                </>
+              ) : (
+                <BlockButton variant="secondary" onClick={() => genOne(g)} disabled={running}>▶</BlockButton>
+              )}
             </div>
           ))}
         </div>
