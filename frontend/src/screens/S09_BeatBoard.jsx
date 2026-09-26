@@ -32,10 +32,12 @@ export default function S09_BeatBoard({ currentProject }) {
   const [voRunning, setVoRunning] = useState(false);
   const [voDone, setVoDone] = useState(0);
   const [voTotal, setVoTotal] = useState(0);
-  // SCENES-MP4 P3-T02: scene preview + 3-button row. Approve hits the real
-  // PUT scenes endpoint; fix-note/regen go through the beat's first SVG asset
-  // via the real svg improve/regenerate endpoints (beats with no SVG asset
-  // get an honest inline message — no scene-level AI endpoint exists yet).
+  // D1-T01: per-asset Fix/Regen. Every asset chip on the scene strip gets
+  // its own Fix + Regen wired to the real per-generation svg endpoints
+  // (POST .../generate/svg/{gen_id}/improve {note},
+  // POST .../generate/svg/{gen_id}). Library-matched assets show an honest
+  // inline note (nothing to redraw — current behavior kept). No new
+  // endpoints, no backend changes. Replaces the P3-T02 first-asset shortcut.
   const [scenes, setScenes] = useState({});
   const [sceneAssets, setSceneAssets] = useState({});
   const [sceneBusy, setSceneBusy] = useState(null);
@@ -98,17 +100,18 @@ export default function S09_BeatBoard({ currentProject }) {
     } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
   };
 
-  const firstSvgAsset = (beatId) => (sceneAssets[beatId] || []).find(a => a.generation_id);
+  const assetKey = (beatId, asset) => `${beatId}:${asset.id}`;
+  const isBeatBusy = (beatId) => sceneBusy === beatId || (sceneBusy || '').startsWith(`${beatId}:`);
 
-  const sendFixNote = async (beatId) => {
+  const sendFixNoteForAsset = async (beatId, asset) => {
     const note = fixDraft.trim();
     if (!note) { sayScene(beatId, 'Write a note first — what should change?'); return; }
-    const asset = firstSvgAsset(beatId);
-    if (!asset) {
-      sayScene(beatId, 'No SVG asset on this beat — note kept, scene-level improve lands in a later ticket.');
+    if (!asset?.generation_id) {
+      sayScene(beatId, 'Library match — nothing to redraw (fix-note needs a generated SVG asset).');
       return;
     }
-    setSceneBusy(beatId);
+    const key = assetKey(beatId, asset);
+    setSceneBusy(key);
     try {
       const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/improve`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -121,14 +124,14 @@ export default function S09_BeatBoard({ currentProject }) {
     } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
   };
 
-  const regenAsset = async (beatId) => {
-    const asset = firstSvgAsset(beatId);
-    if (!asset) {
-      sayScene(beatId, 'No SVG asset on this beat — nothing to regenerate (all library matches).');
+  const regenAssetForId = async (beatId, asset) => {
+    if (!asset?.generation_id) {
+      sayScene(beatId, `Library match "${asset?.name || 'asset'}" (${asset?.library_ref || 'library'}) — nothing to redraw.`);
       return;
     }
     if (!confirm(`Regenerate "${asset.name}" (gen ${asset.generation_id}) as a NEW version?\nOld versions are kept, never overwritten.`)) return;
-    setSceneBusy(beatId);
+    const key = assetKey(beatId, asset);
+    setSceneBusy(key);
     try {
       const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}`, { method: 'POST' });
       const data = await safeJson(res);
@@ -567,35 +570,64 @@ export default function S09_BeatBoard({ currentProject }) {
                         <p className="mt-2 text-xs italic text-ink/50">Preview unavailable for {b.id}.</p>
                       )}
                       <div className="flex gap-2 mt-2 flex-wrap">
-                        <BlockButton variant="secondary" disabled={sceneBusy === b.id || scenes[b.id].status === 'approved'}
+                        <BlockButton variant="secondary" disabled={isBeatBusy(b.id) || scenes[b.id].status === 'approved'}
                           onClick={() => approveScene(b.id)}>
                           {scenes[b.id].status === 'approved' ? '✓ Approved' : '✅ Approve scene'}
                         </BlockButton>
-                        <BlockButton variant="secondary"
-                          onClick={() => { setFixOpen(fixOpen === b.id ? null : b.id); setFixDraft(''); }}>
-                          📝 Fix-note
-                        </BlockButton>
-                        <BlockButton variant="secondary" disabled={sceneBusy === b.id}
-                          onClick={() => regenAsset(b.id)}>
-                          🔁 Regen one asset
-                        </BlockButton>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {(sceneAssets[b.id] || []).map(a => {
+                          const key = assetKey(b.id, a);
+                          const busy = sceneBusy === key;
+                          return (
+                            <div key={a.id} className="flex items-center gap-2 flex-wrap text-xs bg-white border border-ink/20 rounded px-2 py-1">
+                              <span className="font-bold font-mono">{a.name}</span>
+                              <span className="text-ink/50 font-mono">{a.kind}{a.generation_id ? ` · gen ${a.generation_id}` : ''}{a.library_ref ? ` · ${a.library_ref}` : ''}</span>
+                              {a.generation_id ? (
+                                <>
+                                  <button
+                                    onClick={() => { setFixOpen(fixOpen === key ? null : key); setFixDraft(''); }}
+                                    className="font-heading font-bold hover:text-info">
+                                    📝 Fix
+                                  </button>
+                                  <button
+                                    disabled={isBeatBusy(b.id)}
+                                    onClick={() => regenAssetForId(b.id, a)}
+                                    className="font-heading font-bold hover:text-warn disabled:opacity-40">
+                                    {busy ? '🔁 working…' : '🔁 Regen'}
+                                  </button>
+                                </>
+                              ) : (
+                                <span className="italic text-ink/50">library match — nothing to redraw</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {(sceneAssets[b.id] || []).length === 0 && (
+                          <p className="text-xs italic text-ink/50">No assets — plan assets first (②).</p>
+                        )}
                       </div>
                       {sceneMsg[b.id] && <p className="mt-1 text-xs font-heading text-primary">{sceneMsg[b.id]}</p>}
-                      {fixOpen === b.id && (
-                        <div className="mt-2">
-                          <textarea name={`fix_${b.id}`} value={fixDraft} rows={2}
-                            onChange={e => setFixDraft(e.target.value)}
-                            className="w-full bg-white border-2 border-ink rounded px-2 py-1 font-body text-xs"
-                            placeholder="What should change in the asset's next version? (sent to the beat's first SVG asset)" />
-                          <div className="flex justify-end mt-1">
-                            <BlockButton variant="secondary" disabled={sceneBusy === b.id}
-                              onClick={() => sendFixNote(b.id)}>📨 send to improve</BlockButton>
+                      {(() => {
+                        const openAsset = (sceneAssets[b.id] || []).find(a => assetKey(b.id, a) === fixOpen);
+                        if (!openAsset) return null;
+                        const key = assetKey(b.id, openAsset);
+                        return (
+                          <div className="mt-2">
+                            <textarea name={`fix_${b.id}_${openAsset.id}`} value={fixDraft} rows={2}
+                              onChange={e => setFixDraft(e.target.value)}
+                              className="w-full bg-white border-2 border-ink rounded px-2 py-1 font-body text-xs"
+                              placeholder={`What should change in "${openAsset.name}" (gen ${openAsset.generation_id}) next version?`} />
+                            <div className="flex justify-end mt-1">
+                              <BlockButton variant="secondary" disabled={sceneBusy === key}
+                                onClick={() => sendFixNoteForAsset(b.id, openAsset)}>📨 send to improve</BlockButton>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   ) : (
-                    <p className="mt-2 text-xs italic text-ink/50">No scene row — plan scenes first (API).</p>
+                    <p className="mt-2 text-xs italic text-ink/50">No scene row — click ① Plan scenes above.</p>
                   )}
 
                   {openBeat === b.id && manifest && (
