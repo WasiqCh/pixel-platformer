@@ -306,8 +306,8 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
 - **D3 per-beat voice upload.** B##.wav-style uploads from any external source; each
   file IS its beat's duration, so timing stays intact with zero alignment.
 - **D4 local Kokoro voice.** Free in-app narration, per beat, automatic timing. The
-  default answer for cloud cost + laziness. (Needsvoices/weights + phonemizer path;
-  proof of install on this machine predates the project.)
+  default answer for cloud cost + laziness. Ticketed below as D4-T01 → T02
+  (owner priority 2026-09-26 — implement before D1–D3/D5–D7).
 - **D5 Setup screen.** Green ticks + one-click install for Inkscape/ffmpeg (winget),
   runtime probing already in code — never ask a layman to type a path. For teammate
   onboarding (fresh `data/` per machine is expected — gitignored by design).
@@ -320,6 +320,38 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
 - **D7 quality re-gen pass.** Entire asset base is stand-in quality (qwen era); re-run
   generation + approval against real models before any real video. Machinery exists
   (re-plan replace, improve, revert, hash-cache raster).
+
+### D4 — LOCAL KOKORO VOICE (owner priority; implement before D1–D3/D5–D7)
+
+Goal: free in-app narration with the identical output contract as Gemini TTS —
+per-beat `08_export/voiceover/B###.wav` (24kHz mono 16-bit) + measured
+`beats.duration_sec` — so the gate, P4 worker, and mux treat both providers
+identically. Provider switch in voice settings; default stays Gemini until D4
+passes on this machine.
+
+**D4-T01 — Kokoro spike (tooling decision, one sitting, no app code).**
+Settle before anything is wired: (a) can the project `.venv` (Python 3.14.0)
+`pip install kokoro-onnx onnxruntime phonemizer` cleanly, or must the venv pin
+change — record versions; (b) does phonemization work end-to-end (espeak-ng has
+no system install here — only a DLL phonemizer unpacks into %TEMP% — so actually
+phonemize a sentence and show output); (c) synthesize one sentence with local
+weights to a 24kHz mono WAV that plays. Known weight locations (verify, never
+hard-code in app code): `C:\Users\wasiq\Downloads\Kokoro\kokoro-v1.0.onnx`
+(311MB) + `voices-v1.0.bin` (27MB).
+*Acceptance: `docs/scenes-mp4/DECISION_KOKORO.md` recording venv verdict per
+package, espeak path verdict, synth command + WAV proof (ffprobe rate/channels),
+and the exact weight paths + voice list available. No D4-T02 before this.*
+
+**D4-T02 — Provider switch + Kokoro per-beat build.**
+`voice_settings` gains `provider` (`gemini` default) + `kokoro_voice`; Settings
+screen offers the switch (disabled with a clear message when D4-T01 deps are
+absent). New `_tts_kokoro(text, voice)` beside `_tts` in `backend/api/voiceover.py`;
+`_run` picks by provider but keeps the identical loop (per-beat WAV, duration
+measure, `asyncio.create_task` + status endpoint, 1s pacing). Voice names differ
+per provider (Gemini `Kore` vs Kokoro voices) — store per-provider, never mix.
+*Acceptance: same project voiced twice (once per provider) → both produce 30
+WAVs + measured durations, gate passes on either, render works on either;
+Gemini path byte-identical behavior to today (no regression).*
 
 ---
 
