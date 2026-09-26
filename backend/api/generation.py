@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -739,6 +740,63 @@ async def finalize_svg_one(project_id: str, gen_id: int):
     await proj_db.commit()
     await proj_db.close()
     return {"gen_id": gen_id, "status": "final", "file_path": row["file_path"]}
+
+
+# --- SCENES-MP4 D2-T03: SVG playground (validate + raster, no project writes) ---
+# POST /projects/{id}/svg-playground {code}: validates pasted code through
+# the real SvgGen/validate_svg_text path (same messages AI output + paste
+# get), rasters via the P2-T06 Inkscape probe to a hash-named temp PNG under
+# %TEMP% (never into project dirs), and returns the PNG bytes for preview +
+# download. NEVER opens the project DB (only _proj's app.db read to 404
+# unknown projects) — project.db stays byte-identical by construction.
+
+class SvgPlaygroundRequest(BaseModel):
+    code: str
+
+
+@router.post("/projects/{project_id}/svg-playground")
+async def svg_playground(project_id: str, data: SvgPlaygroundRequest):
+    await _proj(project_id)
+    text = (data.code or "").strip()
+    if not text:
+        raise HTTPException(400, "code must be non-empty (paste SVG markup).")
+    try:
+        clean_svg = validate_svg_text(text)
+    except ValueError as e:
+        # Same validator AI output + D2-T02 paste go through — same message,
+        # nothing written anywhere.
+        raise HTTPException(400, str(e)[:300])
+    _full_hash, short = _svg_content_hash(clean_svg.encode("utf-8"))
+    svg_tmp = os.path.join(tempfile.gettempdir(), f"svg_playground_{short}.svg")
+    png_tmp = os.path.join(tempfile.gettempdir(), f"svg_playground_{short}.png")
+    fname = f"svg_playground_{short}.png"
+    # Cache hit: identical pastes raster once — same bytes back, no re-raster.
+    if os.path.isfile(png_tmp) and os.path.getsize(png_tmp) > 0:
+        return FileResponse(png_tmp, media_type="image/png", filename=fname,
+                            headers={"X-Svg-Hash": _full_hash,
+                                     "X-Playground-Cached": "true"})
+    try:
+        with open(svg_tmp, "w", encoding="utf-8") as f:
+            f.write(clean_svg)
+    except Exception as e:
+        raise HTTPException(500, f"temp write failed: {type(e).__name__}: {str(e)[:200]}")
+    try:
+        inkscape, source, _tried = _probe_inkscape()
+    except FileNotFoundError as e:
+        raise HTTPException(500, str(e)[:300])
+    cmd = [inkscape, svg_tmp, "--export-type=png",
+           f"--export-filename={png_tmp}", "-w", str(_RASTER_W), "-h", str(_RASTER_H)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        raise HTTPException(500, f"raster crashed: {type(e).__name__}: {str(e)[:200]}")
+    if r.returncode != 0 or not os.path.isfile(png_tmp) or os.path.getsize(png_tmp) == 0:
+        err = (r.stderr or r.stdout or f"exit {r.returncode}")[-250:]
+        raise HTTPException(500, f"inkscape failed (exit {r.returncode}): {err}"[:300])
+    return FileResponse(png_tmp, media_type="image/png", filename=fname,
+                        headers={"X-Svg-Hash": _full_hash,
+                                 "X-Playground-Cached": "false",
+                                 "X-Inkscape-Source": source})
 
 
 @router.get("/projects/{project_id}/generations")

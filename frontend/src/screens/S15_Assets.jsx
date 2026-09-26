@@ -32,6 +32,17 @@ export default function S15_Assets({ currentProject }) {
   const [pasteDraft, setPasteDraft] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
   const [pasteMsg, setPasteMsg] = useState({});
+  // D2-T03 — SVG playground (validate + raster, no project writes). Code box
+  // → Preview button → PNG shown → Download button. POSTs pasted code to
+  // POST .../svg-playground {code} (real validate_svg_text path, Inkscape
+  // raster to a hash-named %TEMP% PNG, PNG bytes back). Reads the PNG as a
+  // blob → object URL for both preview and download. Touches no
+  // scenes/gens/library state — fully separate from the list above.
+  const [pgCode, setPgCode] = useState('');
+  const [pgBusy, setPgBusy] = useState(false);
+  const [pgMsg, setPgMsg] = useState('');
+  const [pgUrl, setPgUrl] = useState(null);
+  const [pgHash, setPgHash] = useState('');
 
   // Read-only loads (existing list endpoints only). Effect loader carries
   // no synchronous setState (async .then sets only, S09 pattern) so the
@@ -112,6 +123,34 @@ export default function S15_Assets({ currentProject }) {
 
   const sayPaste = (assetId, m) => setPasteMsg((p) => ({ ...p, [assetId]: m }));
 
+  // D2-T03 playground preview: POST code → PNG blob → object URL (preview +
+  // download share it). Invalid code shows the validator message, no image.
+  const previewPlayground = async () => {
+    const code = (pgCode || '').trim();
+    if (!code) { setPgMsg('Paste SVG markup first — code box is empty.'); return; }
+    if (pgUrl) { URL.revokeObjectURL(pgUrl); setPgUrl(null); }
+    setPgBusy(true);
+    setPgMsg('');
+    setPgHash('');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/svg-playground`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) {
+        const data = await safeJson(res);
+        setPgMsg('Playground rejected: ' + (data.detail || 'Unknown error'));
+        return;
+      }
+      const blob = await res.blob();
+      setPgUrl(URL.createObjectURL(blob));
+      const hash = res.headers.get('X-Svg-Hash') || '';
+      setPgHash(hash);
+      const hit = res.headers.get('X-Playground-Cached') === 'true';
+      setPgMsg(`✓ preview 1920×1080 PNG (${blob.size}B${hit ? ' · cache hit — same bytes' : ' · fresh raster'}) · nothing written to the project`);
+    } catch (e) { setPgMsg('Network error: ' + e.message); } finally { setPgBusy(false); }
+  };
+
   const sendPaste = async (asset) => {
     const code = (pasteDraft || '').trim();
     if (!code) { sayPaste(asset.id, 'Paste SVG markup first — code box is empty.'); return; }
@@ -175,7 +214,7 @@ export default function S15_Assets({ currentProject }) {
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.PASTED} PASTED</span>
       </div>
 
-      <Card title={`All assets${filter !== 'all' ? ` · filtered: ${filter}` : ''} (paste live in D2-T02 · playground lands in D2-T03)`}>
+      <Card title={`All assets${filter !== 'all' ? ` · filtered: ${filter}` : ''} (paste live in D2-T02 · playground below in D2-T03)`}>
         <div className="flex gap-2 flex-wrap mb-3">
           {['all', 'GENERATED', 'LIBRARY', 'PASTED'].map((f) => (
             <BlockButton key={f} variant="secondary" onClick={() => setFilter(f)}>
@@ -285,6 +324,48 @@ export default function S15_Assets({ currentProject }) {
                 </div>
               );
             })}
+          </div>
+        )}
+      </Card>
+
+      <Card title="SVG playground (D2-T03 — validate + raster, no project writes)">
+        <p className="font-body text-sm text-ink/70 mb-2">
+          Paste any SVG → Preview → 1920×1080 PNG below → Download. Same validator the AI output
+          passes through; rasters via the project Inkscape probe to a hash-named temp file
+          (never into project dirs). Nothing here touches scenes, generations, or the library.
+        </p>
+        <textarea
+          name="playground_code"
+          value={pgCode}
+          rows={6}
+          onChange={(e) => setPgCode(e.target.value)}
+          className="w-full bg-white border-2 border-ink rounded px-2 py-1 font-mono text-xs"
+          placeholder={'Paste SVG markup (must carry viewBox + width + height, no <script>/external refs)…'}
+        />
+        <div className="flex gap-2 mt-2 flex-wrap items-center">
+          <BlockButton disabled={pgBusy} onClick={previewPlayground}>
+            {pgBusy ? 'Rastering…' : '🖼️ Preview PNG'}
+          </BlockButton>
+          {pgUrl && (
+            <a
+              href={pgUrl}
+              download={pgHash ? `svg_playground_${pgHash.slice(0, 12)}.png` : 'svg_playground.png'}
+              className="text-xs font-heading font-bold hover:text-info"
+            >
+              ⬇ Download PNG
+            </a>
+          )}
+        </div>
+        {pgMsg && <p className="mt-2 text-xs font-heading text-primary">{pgMsg}</p>}
+        {pgUrl ? (
+          <img
+            src={pgUrl}
+            alt="SVG playground preview (1920×1080 raster)"
+            className="mt-2 w-full rounded border-2 border-ink/30"
+          />
+        ) : (
+          <div className="mt-2 w-full aspect-video rounded border-2 border-dashed border-ink/30 bg-panel flex items-center justify-center">
+            <span className="text-xs font-heading font-bold text-ink/50">NO PREVIEW — paste code, hit Preview PNG</span>
           </div>
         )}
       </Card>
