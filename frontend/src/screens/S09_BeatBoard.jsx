@@ -43,6 +43,18 @@ export default function S09_BeatBoard({ currentProject }) {
   const [fixDraft, setFixDraft] = useState('');
   const [sceneMsg, setSceneMsg] = useState({});
   const [previewDead, setPreviewDead] = useState({});
+  // D8-T01: pipeline button row (frontend-only, existing endpoints in click order).
+  // ① plan scenes → ② plan assets → ③ per-row POST generate/svg/{gen_id}
+  // (never POST generate/all: PNG lane, 400s svg rows) → ④ render + poll
+  // status → ⑤ cancel (visible only while running). One busy flag disables
+  // the row (no double-fire); every response renders counts, never bare done.
+  const [pipeBusy, setPipeBusy] = useState(null);
+  const [pipeMsg, setPipeMsg] = useState('');
+  const [svgProg, setSvgProg] = useState(null);
+  const [renderJob, setRenderJob] = useState(null);
+  const [renderMsg, setRenderMsg] = useState('');
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const rowBusy = pipeBusy !== null || !!renderJob?.running;
 
   const refresh = () => {
     if (currentProject)
@@ -124,6 +136,112 @@ export default function S09_BeatBoard({ currentProject }) {
       if (data.status === 'error') { sayScene(beatId, 'Asset error: ' + (data.error || 'Unknown')); return; }
       sayScene(beatId, `✓ "${asset.name}" regen → v${data.version} (${data.status})`);
     } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
+  };
+
+  // D8-T01 pipeline row — existing endpoints only, in click order.
+  const planScenes = async () => {
+    if (rowBusy) return;
+    setPipeBusy('plan-scenes'); setPipeMsg('Planning scenes…');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/scenes/plan`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) { setPipeMsg('Plan scenes failed: ' + (data.detail || 'Unknown error')); return; }
+      const failedN = Array.isArray(data.failed) ? data.failed.length : (data.failed || 0);
+      setPipeMsg(`${data.planned ?? 0} planned, ${data.skipped_approved ?? 0} skipped approved, ${failedN} failed of ${data.total_beats ?? '?'} beats`);
+      refreshScenes();
+    } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
+  };
+
+  const planAssets = async () => {
+    if (rowBusy) return;
+    setPipeBusy('plan-assets'); setPipeMsg('Planning assets…');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/scenes/assets/plan`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) { setPipeMsg('Plan assets failed: ' + (data.detail || 'Unknown error')); return; }
+      const failedN = Array.isArray(data.failed) ? data.failed.length : (data.failed || 0);
+      setPipeMsg(`${data.planned_scenes ?? 0}/${data.total_scenes ?? '?'} scenes, ${data.total_needs ?? 0} needs = ${data.matched ?? 0} matched + ${data.to_generate ?? 0} to-generate, ${failedN} failed`);
+      refreshScenes();
+    } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
+  };
+
+  const generateAllSvgs = async () => {
+    if (rowBusy) return;
+    setPipeBusy('gen-svg'); setSvgProg(null);
+    try {
+      const listRes = await fetch(`/api/v1/projects/${currentProject.id}/generations`);
+      const listData = await safeJson(listRes);
+      if (!listRes.ok) { setPipeMsg('List generations failed: ' + (listData.detail || 'Unknown error')); return; }
+      const rows = Array.isArray(listData.rows) ? listData.rows : (Array.isArray(listData) ? listData : []);
+      // SVG lane only: sequential per-row POST generate/svg/{gen_id}.
+      // Never POST generate/all here — that is the PNG lane and 400s svg rows.
+      const pending = rows.filter((r) => r.kind === 'svg' && r.status === 'pending');
+      if (pending.length === 0) { setPipeMsg('0 pending SVG generations — nothing to do'); return; }
+      let ok = 0;
+      const fails = [];
+      setPipeMsg(`Generating 0/${pending.length} SVGs…`);
+      for (let i = 0; i < pending.length; i++) {
+        const g = pending[i];
+        setSvgProg({ done: i, total: pending.length, ok, fail: fails.length });
+        try {
+          const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${g.id}`, { method: 'POST' });
+          const data = await safeJson(res);
+          if (!res.ok) fails.push(`gen ${g.id}: ${data.detail || 'error'}`);
+          else if (data.status === 'error') fails.push(`gen ${g.id}: ${data.error || 'error'}`);
+          else ok += 1;
+        } catch (e) { fails.push(`gen ${g.id}: ${e.message}`); }
+        setPipeMsg(`Generating ${i + 1}/${pending.length} SVGs… (${ok} ok, ${fails.length} failed)`);
+      }
+      setSvgProg({ done: pending.length, total: pending.length, ok, fail: fails.length });
+      setPipeMsg(`${ok} generated, ${fails.length} failed of ${pending.length} pending SVGs` + (fails.length ? ` — e.g. ${fails.slice(0, 2).join('; ')}` : ''));
+      refreshScenes();
+    } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
+  };
+
+  const pollRender = () => {
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/v1/projects/${currentProject.id}/render/status`);
+        const s = await safeJson(r);
+        if (!r.ok) return;
+        setRenderJob(s);
+        if (!s.running) {
+          clearInterval(t);
+          if (s.status === 'done') setRenderMsg(`Render done: ${s.current_segment}/${s.total_segments} segments → ${s.output_path}`);
+          else if (s.status === 'cancelled') setRenderMsg(`Render cancelled at ${s.current_segment}/${s.total_segments} — resume with Render`);
+          else if (s.status === 'error') setRenderMsg(`Render error: ${s.error || 'unknown'}`);
+        }
+      } catch { /* keep polling; next tick retries */ }
+    }, 2000);
+  };
+
+  const startRender = async () => {
+    if (rowBusy) return;
+    setRenderMsg('Starting render…');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/render`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) {
+        // 409 carries the gate message verbatim with its fix list — show it as-is.
+        setRenderMsg((res.status === 409 ? '' : `Render failed (${res.status}): `) + (data.detail || data.message || 'Unknown error'));
+        return;
+      }
+      setRenderJob(data);
+      setRenderMsg(`${data.resumed ? 'Resumed' : 'Started'} render job ${data.job_id} at ${data.current_segment}/${data.total_segments} → ${data.output_path || ''}`);
+      pollRender();
+    } catch (e) { setRenderMsg('Network error: ' + e.message); }
+  };
+
+  const cancelRender = async () => {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/render/cancel`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) { setRenderMsg('Cancel failed: ' + (data.detail || 'Unknown error')); return; }
+      setRenderJob(data);
+      setRenderMsg(data.message || `Cancel requested at ${data.current_segment}/${data.total_segments}`);
+    } catch (e) { setRenderMsg('Network error: ' + e.message); } finally { setCancelBusy(false); }
   };
 
   const extract = async () => {
@@ -293,6 +411,45 @@ export default function S09_BeatBoard({ currentProject }) {
         </span>
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{totalElements} ELEMENTS</span>
       </div>
+
+      <Card title="Scene → MP4 pipeline ①→④ (existing endpoints, no API tools needed)">
+        <div className="flex gap-2 flex-wrap">
+          <BlockButton variant="secondary" onClick={planScenes} disabled={rowBusy}>
+            {pipeBusy === 'plan-scenes' ? '① Planning…' : '① Plan scenes'}
+          </BlockButton>
+          <BlockButton variant="secondary" onClick={planAssets} disabled={rowBusy}>
+            {pipeBusy === 'plan-assets' ? '② Planning…' : '② Plan assets'}
+          </BlockButton>
+          <BlockButton variant="secondary" onClick={generateAllSvgs} disabled={rowBusy}>
+            {pipeBusy === 'gen-svg' && svgProg
+              ? `③ Generating ${svgProg.done}/${svgProg.total}…`
+              : pipeBusy === 'gen-svg' ? '③ Generating…' : '③ Generate-all SVGs'}
+          </BlockButton>
+          <BlockButton onClick={startRender} disabled={rowBusy}>
+            {renderJob?.running ? `④ Rendering ${renderJob.current_segment}/${renderJob.total_segments}…` : '④ Render'}
+          </BlockButton>
+          {renderJob?.running && (
+            <BlockButton variant="danger" onClick={cancelRender} disabled={cancelBusy}>
+              {cancelBusy ? 'Cancelling…' : '⑤ Cancel'}
+            </BlockButton>
+          )}
+        </div>
+        {pipeMsg && <p className="mt-2 text-xs font-heading text-primary">{pipeMsg}</p>}
+        {renderJob && renderJob.total_segments > 0 && (
+          <div className="mt-2">
+            <div className="w-full h-3 border-2 border-ink rounded bg-panel overflow-hidden">
+              <div
+                className="h-full bg-success"
+                style={{ width: `${Math.round(((renderJob.progress ?? (renderJob.total_segments ? renderJob.current_segment / renderJob.total_segments : 0)) || 0) * 100)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-xs font-mono text-ink/70">
+              {renderJob.current_segment}/{renderJob.total_segments} · {Math.round(((renderJob.progress ?? 0) || 0) * 100)}% · {renderJob.status}{renderJob.output_path ? ` → ${renderJob.output_path}` : ''}
+            </p>
+          </div>
+        )}
+        {renderMsg && <p className="mt-2 text-xs font-heading text-primary">{renderMsg}</p>}
+      </Card>
 
       {beats.length > 0 && (
         <Card title="Timeline — click a block to jump to that beat">
