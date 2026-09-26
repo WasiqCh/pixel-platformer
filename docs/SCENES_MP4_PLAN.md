@@ -294,6 +294,33 @@ raster PNG + fix-note to a vision-capable model on improve (plumbing exists:
 `dispatch_vision` in `llm_client.py`; local vision models available). Today's loop sends
 previous SVG *code* + text note only. Needs its own ticket when scheduled.
 
+### DEFERRED BATCH (post-P4, owner request 2026-09-26 — each needs its own ticket, none disturb P4)
+
+- **D1 per-asset targeting.** Fix-note/regen act on the beat's first SVG asset only
+  (P3-T02 shortcut). Every asset gets its own Fix/Regen buttons.
+- **D2 Assets page.** All assets in one place: provenance badges (generated / library /
+  pasted); copy-prompt (exact svg_gen prompt to clipboard for external AI use);
+  paste-code (external SVG validated like AI output, saved versioned, revertable);
+  per-asset "bring my own" (skip generation, paste instead — manual-always-valid);
+  SVG playground (paste code → preview PNG → download PNG, same raster engine).
+- **D3 per-beat voice upload.** B##.wav-style uploads from any external source; each
+  file IS its beat's duration, so timing stays intact with zero alignment.
+- **D4 local Kokoro voice.** Free in-app narration, per beat, automatic timing. The
+  default answer for cloud cost + laziness. (Needsvoices/weights + phonemizer path;
+  proof of install on this machine predates the project.)
+- **D5 Setup screen.** Green ticks + one-click install for Inkscape/ffmpeg (winget),
+  runtime probing already in code — never ask a layman to type a path. For teammate
+  onboarding (fresh `data/` per machine is expected — gitignored by design).
+- **D6 whole-audio align.** One uploaded audio file → Whisper word timestamps →
+  force-align against the locked script (port `force_align_script` from
+  `E:\Youtube\Editing Automation\audio_prep_engine 2.0.py`, lines ~18–123; GUI stays
+  behind) → per-beat times → slice per-beat WAVs → normal render. Accepts any source
+  (Kokoro whole-audio, external TTS) with zero manual splitting. Cost: torch/whisper
+  weight + CPU minutes; ffmpeg already mandatory.
+- **D7 quality re-gen pass.** Entire asset base is stand-in quality (qwen era); re-run
+  generation + approval against real models before any real video. Machinery exists
+  (re-plan replace, improve, revert, hash-cache raster).
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
