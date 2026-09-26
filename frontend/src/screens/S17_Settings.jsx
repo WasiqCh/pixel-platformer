@@ -18,12 +18,27 @@ export default function S17_Settings() {
   const [status, setStatus] = useState('idle'); // idle, saving, saved, testing, test_success, test_error
   const [testMsg, setTestMsg] = useState('');
 
+  // SCENES-MP4 D4-T02: provider switch (Gemini default; Kokoro offered only
+  // when its deps import cleanly). Voice names differ per provider — stored
+  // per-provider, never mixed.
+  const [voiceCfg, setVoiceCfg] = useState({ voice: 'Kore', enabled: true, provider: 'gemini', kokoro_voice: 'af_heart' });
+  const [kokoroStatus, setKokoroStatus] = useState({ available: false, reason: 'checking…', voices: [] });
+  const [voiceMsg, setVoiceMsg] = useState('');
+
   // Load current settings on mount
   useEffect(() => {
     fetch('/api/v1/settings')
       .then(res => res.json())
       .then(data => setSettings(data))
       .catch(err => console.error("Failed to load settings", err));
+    fetch('/api/v1/settings/voice')
+      .then(res => res.json())
+      .then(data => setVoiceCfg(v => ({ ...v, ...data })))
+      .catch(err => console.error("Failed to load voice settings", err));
+    fetch('/api/v1/settings/voice/kokoro-status')
+      .then(res => res.json())
+      .then(data => setKokoroStatus(data))
+      .catch(err => console.error("Failed to probe kokoro", err));
   }, []);
 
   const handleChange = (e) => {
@@ -68,6 +83,28 @@ export default function S17_Settings() {
       setStatus('idle');
       playSfx('error');
       alert("Error saving settings");
+    }
+  };
+
+  const saveVoice = async () => {
+    setVoiceMsg('saving…');
+    try {
+      const res = await fetch('/api/v1/settings/voice', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(voiceCfg)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setVoiceMsg('✓ voice settings saved');
+        playSfx('save');
+      } else {
+        setVoiceMsg('Save failed: ' + (data.detail || 'Unknown error'));
+        playSfx('error');
+      }
+    } catch (err) {
+      setVoiceMsg('Network error: ' + err.message);
+      playSfx('error');
     }
   };
 
@@ -181,6 +218,90 @@ export default function S17_Settings() {
             files to download. Enable it to hear a preview; buttons and navigation will
             then click.
           </p>
+      </Card>
+
+      <Card title="Voiceover (Narration) — provider + per-provider voice">
+        <div className="space-y-4">
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 font-heading font-bold cursor-pointer">
+              <input
+                type="radio"
+                name="voice_provider"
+                value="gemini"
+                checked={(voiceCfg.provider || 'gemini') === 'gemini'}
+                onChange={() => setVoiceCfg(v => ({ ...v, provider: 'gemini' }))}
+                className="w-5 h-5 accent-primary"
+              />
+              Gemini TTS (cloud, default)
+            </label>
+            <label className={`flex items-center gap-2 font-heading font-bold ${kokoroStatus.available ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
+              <input
+                type="radio"
+                name="voice_provider"
+                value="kokoro"
+                checked={(voiceCfg.provider || 'gemini') === 'kokoro'}
+                disabled={!kokoroStatus.available}
+                onChange={() => setVoiceCfg(v => ({ ...v, provider: 'kokoro' }))}
+                className="w-5 h-5 accent-primary"
+              />
+              Kokoro (local, free)
+            </label>
+            {!kokoroStatus.available && (
+              <p className="text-xs font-body text-danger">
+                Kokoro unavailable: {kokoroStatus.reason || 'deps missing'}
+              </p>
+            )}
+            {kokoroStatus.available && (
+              <p className="text-xs font-body text-ink/60">
+                Kokoro ready — {kokoroStatus.voices?.length || 0} voices, weights present.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className={labelClass}>Gemini voice (cloud)</label>
+            <input
+              type="text"
+              value={voiceCfg.voice || 'Kore'}
+              onChange={e => setVoiceCfg(v => ({ ...v, voice: e.target.value }))}
+              className={inputClass}
+              placeholder="Kore"
+            />
+          </div>
+
+          <div>
+            <label className={labelClass}>Kokoro voice (local)</label>
+            {kokoroStatus.available && kokoroStatus.voices?.length > 0 ? (
+              <select
+                value={voiceCfg.kokoro_voice || 'af_heart'}
+                onChange={e => setVoiceCfg(v => ({ ...v, kokoro_voice: e.target.value }))}
+                className={inputClass}
+              >
+                {kokoroStatus.voices.map(vn => (
+                  <option key={vn} value={vn}>{vn}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={voiceCfg.kokoro_voice || 'af_heart'}
+                onChange={e => setVoiceCfg(v => ({ ...v, kokoro_voice: e.target.value }))}
+                className={inputClass}
+                placeholder="af_heart"
+                disabled={!kokoroStatus.available}
+              />
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <BlockButton variant="secondary" onClick={saveVoice}>💾 Save voice settings</BlockButton>
+            {voiceMsg && <span className="text-xs font-heading font-bold">{voiceMsg}</span>}
+          </div>
+          <p className="text-xs text-ink/60 font-body">
+            Same per-beat WAVs either way (24kHz mono 16-bit + measured durations) —
+            the render gate and MP4 mux treat both providers identically.
+          </p>
+        </div>
       </Card>
 
       <StreamLab />

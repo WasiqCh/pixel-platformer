@@ -77,10 +77,13 @@ CREATE TABLE IF NOT EXISTS channel_library (
 );
 
 -- voice settings (single row)
+-- D4-T02: provider switch (gemini default) + per-provider voices (never mix).
 CREATE TABLE IF NOT EXISTS voice_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     voice TEXT NOT NULL DEFAULT 'Kore',
     enabled INTEGER NOT NULL DEFAULT 1,
+    provider TEXT NOT NULL DEFAULT 'gemini',
+    kokoro_voice TEXT NOT NULL DEFAULT 'af_heart',
     updated_at TEXT NOT NULL DEFAULT ''
 );
 
@@ -303,6 +306,9 @@ async def init_app_db(db_conn):
     # 1 when this row was produced by tier auto-escalation after the cheap
     # model failed validation twice (see llm_client.dispatch).
     await _ensure_column(db_conn, "job_log", "escalated", "INTEGER NOT NULL DEFAULT 0")
+    # SCENES-MP4 D4-T02: provider switch (gemini default) + per-provider voice.
+    await _ensure_column(db_conn, "voice_settings", "provider", "TEXT NOT NULL DEFAULT 'gemini'")
+    await _ensure_column(db_conn, "voice_settings", "kokoro_voice", "TEXT NOT NULL DEFAULT 'af_heart'")
     await db_conn.commit()
 
 async def _ensure_column(db_conn, table: str, column: str, ddl: str):
