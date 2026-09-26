@@ -22,6 +22,16 @@ export default function S15_Assets({ currentProject }) {
   const [imgDead, setImgDead] = useState({});
   const [filter, setFilter] = useState('all');
   const [msg, setMsg] = useState('');
+  // D2-T02 — paste-code + bring-my-own (per-asset). Paste box POSTs external
+  // SVG through POST .../generate/svg/{gen_id}/paste {code} (real
+  // SvgGen/validate_svg_text path backend-side, versioned _vN, pointer move,
+  // source='pasted' so the badge below flips to PASTED). Pending rows read
+  // "bring my own" (skip-generation); generated rows read "paste-code (new
+  // version)". Old versions + revert intact (versions endpoint untouched).
+  const [pasteOpen, setPasteOpen] = useState(null);
+  const [pasteDraft, setPasteDraft] = useState('');
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteMsg, setPasteMsg] = useState({});
 
   // Read-only loads (existing list endpoints only). Effect loader carries
   // no synchronous setState (async .then sets only, S09 pattern) so the
@@ -100,6 +110,37 @@ export default function S15_Assets({ currentProject }) {
     }
   };
 
+  const sayPaste = (assetId, m) => setPasteMsg((p) => ({ ...p, [assetId]: m }));
+
+  const sendPaste = async (asset) => {
+    const code = (pasteDraft || '').trim();
+    if (!code) { sayPaste(asset.id, 'Paste SVG markup first — code box is empty.'); return; }
+    if (!asset.generation_id) { sayPaste(asset.id, 'Library match — nothing to paste into.'); return; }
+    setPasteBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/paste`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayPaste(asset.id, 'Paste rejected: ' + (data.detail || 'Unknown error')); return; }
+      // Badge flips to PASTED without a full reload: patch the gen row's
+      // source in place, then re-fetch for the pointer (svg_path/status).
+      setGensById((m) => ({
+        ...m,
+        [asset.generation_id]: {
+          ...m[asset.generation_id],
+          source: 'pasted',
+          svg_path: data.svg_path || m[asset.generation_id]?.svg_path,
+          status: data.status || m[asset.generation_id]?.status,
+        },
+      }));
+      setPasteOpen(null);
+      setPasteDraft('');
+      sayPaste(asset.id, `✓ pasted → v${data.version} (${data.status}, source=pasted)`);
+    } catch (e) { sayPaste(asset.id, 'Network error: ' + e.message); } finally { setPasteBusy(false); }
+  };
+
   if (!currentProject) {
     return (
       <div className="max-w-3xl mx-auto mt-12 text-center card">
@@ -134,7 +175,7 @@ export default function S15_Assets({ currentProject }) {
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.PASTED} PASTED</span>
       </div>
 
-      <Card title={`All assets — read-only${filter !== 'all' ? ` · filtered: ${filter}` : ''} (paste + playground land in D2-T02/T03)`}>
+      <Card title={`All assets${filter !== 'all' ? ` · filtered: ${filter}` : ''} (paste live in D2-T02 · playground lands in D2-T03)`}>
         <div className="flex gap-2 flex-wrap mb-3">
           {['all', 'GENERATED', 'LIBRARY', 'PASTED'].map((f) => (
             <BlockButton key={f} variant="secondary" onClick={() => setFilter(f)}>
@@ -197,17 +238,49 @@ export default function S15_Assets({ currentProject }) {
                     )}
                     <div className="flex gap-2 mt-2 flex-wrap items-center">
                       {a.generation_id && gen ? (
-                        <button
-                          onClick={() => copyPrompt(a)}
-                          title="Copy the exact stored prompt (generations.prompt) to the clipboard"
-                          className="text-xs font-heading font-bold hover:text-info"
-                        >
-                          {copied === a.id ? '✓ Copied!' : '📋 copy-prompt'}
-                        </button>
+                        <>
+                          <button
+                            onClick={() => copyPrompt(a)}
+                            title="Copy the exact stored prompt (generations.prompt) to the clipboard"
+                            className="text-xs font-heading font-bold hover:text-info"
+                          >
+                            {copied === a.id ? '✓ Copied!' : '📋 copy-prompt'}
+                          </button>
+                          <button
+                            onClick={() => { setPasteOpen(pasteOpen === a.id ? null : a.id); setPasteDraft(''); }}
+                            title={gen.status === 'pending'
+                              ? 'Bring my own: paste external SVG instead of generating (heals pending rows)'
+                              : 'Paste external SVG as a new versioned _vN (history kept, revert intact)'}
+                            className="text-xs font-heading font-bold hover:text-warn"
+                          >
+                            {gen.status === 'pending' ? '🧳 bring my own' : '📥 paste-code'}
+                          </button>
+                        </>
                       ) : (
                         <span className="text-xs italic text-ink/50">library match — no svg prompt to copy</span>
                       )}
                     </div>
+                    {pasteOpen === a.id && a.generation_id && gen && (
+                      <div className="mt-2">
+                        <textarea
+                          name={`paste_${a.id}`}
+                          value={pasteDraft}
+                          rows={4}
+                          onChange={(e) => setPasteDraft(e.target.value)}
+                          className="w-full bg-white border-2 border-ink rounded px-2 py-1 font-mono text-xs"
+                          placeholder={`Paste external SVG for "${a.name}" (gen ${a.generation_id}) — validated like AI output, saved as versioned _vN, source flips to PASTED…`}
+                        />
+                        <div className="flex justify-end gap-2 mt-1">
+                          <BlockButton variant="secondary" onClick={() => { setPasteOpen(null); setPasteDraft(''); }}>
+                            Cancel
+                          </BlockButton>
+                          <BlockButton disabled={pasteBusy} onClick={() => sendPaste(a)}>
+                            {pasteBusy ? 'Pasting…' : '📥 paste as new version'}
+                          </BlockButton>
+                        </div>
+                      </div>
+                    )}
+                    {pasteMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{pasteMsg[a.id]}</p>}
                   </div>
                 </div>
               );

@@ -539,8 +539,13 @@ export default function S09_BeatBoard({ currentProject }) {
                       )}
                     </div>
                     <div className="flex flex-col gap-1">
-                      <button onClick={() => collect(b.id)} title="Shot kit + prompts"
-                        className="text-xs font-heading font-bold hover:text-info">📦</button>
+                      {/* Micro-fix: where a scene row exists the scene strip below
+                          replaces the old 📦 prompts box — keep the 📦 toggle only
+                          for beats with no scene row (pure conditional render). */}
+                      {!scenes[b.id] && (
+                        <button onClick={() => collect(b.id)} title="Shot kit + prompts"
+                          className="text-xs font-heading font-bold hover:text-info">📦</button>
+                      )}
                       <button onClick={() => mergeNext(b)} title="Merge with next beat (same section)"
                         disabled={isLastInChunk(g, b)}
                         className="text-xs font-heading font-bold hover:text-success disabled:opacity-30">⤵️</button>
@@ -630,7 +635,9 @@ export default function S09_BeatBoard({ currentProject }) {
                     <p className="mt-2 text-xs italic text-ink/50">No scene row — click ① Plan scenes above.</p>
                   )}
 
-                  {openBeat === b.id && manifest && (
+                  {/* Micro-fix: old 📦 prompts box renders only for beats with no
+                      scene row — beats with a scene show the strip above instead. */}
+                  {openBeat === b.id && manifest && !scenes[b.id] && (
                     <div className="mt-2 p-2 border-2 border-info/40 bg-info/10 rounded space-y-2">
                       <p className="text-xs font-heading font-bold">
                         SHOT KIT: {manifest.ready}/{manifest.total} assets ready · {manifest.duration_sec.toFixed(1)}s

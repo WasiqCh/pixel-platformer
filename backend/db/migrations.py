@@ -238,6 +238,9 @@ CREATE TABLE IF NOT EXISTS generations (
     -- SCENES-MP4 P2-T02: versioned SVG source (06_sheets/svg/<asset>_vN.svg,
     -- nullable; file_path holds the rastered PNG once P2-T06 approves+rasters).
     svg_path TEXT,
+    -- SCENES-MP4 D2-T02: provenance marker ('' = AI lane, 'pasted' = user
+    -- pasted external SVG via POST .../paste; S15 badge reads PASTED).
+    source TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -336,4 +339,7 @@ async def init_project_db(db_conn):
     await _ensure_column(db_conn, "scenes", "reasoning", "TEXT")
     # SCENES-MP4 P2-T02: svg source path (nullable; file_path stays the P2-T06 raster PNG).
     await _ensure_column(db_conn, "generations", "svg_path", "TEXT")
+    # SCENES-MP4 D2-T02: provenance marker ('' default = AI lane; 'pasted' set
+    # on first paste; heals old DBs idempotently like svg_path above).
+    await _ensure_column(db_conn, "generations", "source", "TEXT NOT NULL DEFAULT ''")
     await db_conn.commit()

@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from backend.core.llm_client import dispatch
 from backend.db.connection import get_app_db, get_project_db
-from backend.models.scene import SvgGen
+from backend.models.scene import SvgGen, validate_svg_text
 from backend.storage.fs_manager import get_project_dir
 
 router = APIRouter(tags=["generation"])
@@ -539,6 +539,72 @@ async def list_svg_versions(project_id: str, gen_id: int):
     vers = _list_svg_versions(svg_dir, clean)
     return {"gen_id": gen_id, "current_svg_path": row["svg_path"], "status": row["status"],
             "versions": [f"06_sheets/svg/{clean}_v{v}.svg" for v in vers]}
+
+
+# --- SCENES-MP4 D2-T02: paste-code (external SVG validated like AI output) ---
+
+class SvgPasteRequest(BaseModel):
+    code: str
+
+
+async def _paste_svg_row(project_id, folder, ch_id, gen_id, code: str):
+    """Paste external SVG code as a new versioned _vN.svg (manual-always-valid).
+
+    Validates through the real SvgGen/validate_svg_text path (same messages
+    AI output gets), writes versioned file, moves the newest pointer
+    (history intact — same semantics as improve). Works on pending rows
+    (skip-generation: user brings code instead of AI) and on generated rows
+    (new version); approved/final rows demote to generated (needs re-approve,
+    same as improve). Sets source='pasted' so the D2-T01 badge reads PASTED.
+    """
+    text = (code or "").strip()
+    if not text:
+        raise HTTPException(400, "code must be non-empty (paste SVG markup).")
+    try:
+        clean_svg = validate_svg_text(text)
+    except ValueError as e:
+        # Same validator AI output goes through (SvgGen._svg_must_be_safe) —
+        # same message, nothing written.
+        raise HTTPException(400, str(e)[:300])
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    previous = row.get("svg_path") or ""
+    try:
+        ver = _next_svg_version(svg_dir, clean)
+        rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+        (svg_dir / f"{clean}_v{ver}.svg").write_text(clean_svg, encoding="utf-8")
+    except Exception as e:
+        msg = f"write failed: {type(e).__name__}: {str(e)[:200]}"
+        await proj_db.close()
+        raise HTTPException(500, msg[:300])
+    await proj_db.execute(
+        "UPDATE generations SET svg_path=?, status='generated', source='pasted', "
+        "error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+            "version": ver, "source": "pasted",
+            "previous_svg_path": previous or None}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/paste")
+async def paste_svg_one(project_id: str, gen_id: int, data: SvgPasteRequest):
+    folder, ch_id = await _proj(project_id)
+    return await _paste_svg_row(project_id, folder, ch_id, gen_id, data.code)
 
 
 # --- SCENES-MP4 P2-T06: approve -> raster PNG (hash-keyed cache) + finalize ---
