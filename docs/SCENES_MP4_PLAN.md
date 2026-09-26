@@ -289,6 +289,10 @@ Full pass on a real project: script → voiceover → scenes → approved → MP
 
 ### Parked (do NOT build): hand-drawing tools, motion/tween engine, skill-pack export,
 voice-provider swap, handoff upgrades, text-overlay timing changes.
+DEFERRED (post-P4 candidate, owner request 2026-09-26): visual improve — send the approved
+raster PNG + fix-note to a vision-capable model on improve (plumbing exists:
+`dispatch_vision` in `llm_client.py`; local vision models available). Today's loop sends
+previous SVG *code* + text note only. Needs its own ticket when scheduled.
 
 ---
 
@@ -327,7 +331,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P2-T06 | ✅ | 75ad48d | POST .../svg/{gen_id}/approve (Inkscape probe INKSCAPE_PATH→PATH→MSIX glob/appx, never hard-coded; 06_sheets/raster/<base>_<hash12>.png; identical hash = cache hit, no re-raster; file_path = PNG so existing image endpoint serves render) + POST .../finalize (approved→final) ; UI shows PNG never SVG (S11_Library img via image endpoint + ✓/★ buttons); CH03_EP02 live: 5 PNGs (43v1/v2, 97v1/v2, 44v1), re-approve cached:true, image endpoint 200 image/png |
 | P2-T07 | ✅ | uncommitted | Phase 2 gate PASS (audit-only, no code change): CH03_EP02 93 svg (approved 2 + final 1 PNGs on disk 3/3, error 4/4 with message, generated stuck 0, pending 86 untouched sampling); structural gaps 0 (dangling 0, stranded 0, XOR 0, beat-missing 0); 86 pending = coverage not stranding (gateway :20128 flaky), structural scope per owner, not quality review |
 | P3-T01 | ✅ | uncommitted | GET /projects/{id}/scenes/{beat_id}/preview (scenes.py): Pillow 1920x1080 place+needs composite, x/y/scale-or-framing default, fit/letterbox never stretch, missing=labelled box, hash cache 07_beats/previews/; CH03_EP02 B01-B10 all 1920x1080, B01 missing 2/4 edge_px 30232, re-fetch cached:true |
-| P3-T02 | ⬜ | | |
+| P3-T02 | ✅ | uncommitted | S09 beat cards: preview <img> (GET scenes/{beat}/preview, lazy, onError fallback) + 3-button row (approve=PUT status real, fix-note→svg improve {note} real via beat's first gen asset, regen=POST svg/{gen} real; beats with no SVG asset get honest inline msg — no scene-level AI endpoint exists); CH03_EP02 B01-B10 approved 1 click each; lint 0 errors (24 pre-existing warnings, 0 from S09) |
 | P3-T03 | ⬜ | | |
 | P3-T04 | ⬜ | | Phase 3 gate |
 | P4-T01 | ⬜ | | |

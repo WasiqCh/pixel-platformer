@@ -32,6 +32,17 @@ export default function S09_BeatBoard({ currentProject }) {
   const [voRunning, setVoRunning] = useState(false);
   const [voDone, setVoDone] = useState(0);
   const [voTotal, setVoTotal] = useState(0);
+  // SCENES-MP4 P3-T02: scene preview + 3-button row. Approve hits the real
+  // PUT scenes endpoint; fix-note/regen go through the beat's first SVG asset
+  // via the real svg improve/regenerate endpoints (beats with no SVG asset
+  // get an honest inline message — no scene-level AI endpoint exists yet).
+  const [scenes, setScenes] = useState({});
+  const [sceneAssets, setSceneAssets] = useState({});
+  const [sceneBusy, setSceneBusy] = useState(null);
+  const [fixOpen, setFixOpen] = useState(null);
+  const [fixDraft, setFixDraft] = useState('');
+  const [sceneMsg, setSceneMsg] = useState({});
+  const [previewDead, setPreviewDead] = useState({});
 
   const refresh = () => {
     if (currentProject)
@@ -39,6 +50,81 @@ export default function S09_BeatBoard({ currentProject }) {
         .then(r => r.json()).then(setBeats).catch(() => {});
   };
   useEffect(refresh, [currentProject]);
+
+  const refreshScenes = () => {
+    if (!currentProject) return;
+    fetch(`/api/v1/projects/${currentProject.id}/scenes`)
+      .then(r => r.json())
+      .then(rows => {
+        const m = {};
+        (Array.isArray(rows) ? rows : []).forEach(s => { m[s.beat_id] = s; });
+        setScenes(m);
+      }).catch(() => {});
+    fetch(`/api/v1/projects/${currentProject.id}/scenes/assets`)
+      .then(r => r.json())
+      .then(rows => {
+        const m = {};
+        (Array.isArray(rows) ? rows : []).forEach(a => { (m[a.beat_id] = m[a.beat_id] || []).push(a); });
+        setSceneAssets(m);
+      }).catch(() => {});
+  };
+  useEffect(refreshScenes, [currentProject]);
+
+  const sayScene = (beatId, msg) => setSceneMsg(m => ({ ...m, [beatId]: msg }));
+
+  const approveScene = async (beatId) => {
+    setSceneBusy(beatId);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/scenes/${beatId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'approved' })
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayScene(beatId, 'Approve failed: ' + (data.detail || 'Unknown error')); return; }
+      setScenes(s => ({ ...s, [beatId]: { ...s[beatId], status: 'approved' } }));
+      sayScene(beatId, '✓ scene approved (1 click)');
+    } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
+  };
+
+  const firstSvgAsset = (beatId) => (sceneAssets[beatId] || []).find(a => a.generation_id);
+
+  const sendFixNote = async (beatId) => {
+    const note = fixDraft.trim();
+    if (!note) { sayScene(beatId, 'Write a note first — what should change?'); return; }
+    const asset = firstSvgAsset(beatId);
+    if (!asset) {
+      sayScene(beatId, 'No SVG asset on this beat — note kept, scene-level improve lands in a later ticket.');
+      return;
+    }
+    setSceneBusy(beatId);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/improve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note })
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayScene(beatId, 'Improve failed: ' + (data.detail || 'Unknown error')); return; }
+      setFixOpen(null); setFixDraft('');
+      sayScene(beatId, `✓ "${asset.name}" improve → v${data.version} (${data.status})`);
+    } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
+  };
+
+  const regenAsset = async (beatId) => {
+    const asset = firstSvgAsset(beatId);
+    if (!asset) {
+      sayScene(beatId, 'No SVG asset on this beat — nothing to regenerate (all library matches).');
+      return;
+    }
+    if (!confirm(`Regenerate "${asset.name}" (gen ${asset.generation_id}) as a NEW version?\nOld versions are kept, never overwritten.`)) return;
+    setSceneBusy(beatId);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) { sayScene(beatId, 'Regenerate failed: ' + (data.detail || 'Unknown error')); return; }
+      if (data.status === 'error') { sayScene(beatId, 'Asset error: ' + (data.error || 'Unknown')); return; }
+      sayScene(beatId, `✓ "${asset.name}" regen → v${data.version} (${data.status})`);
+    } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
+  };
 
   const extract = async () => {
     setLoading(true);
@@ -303,6 +389,57 @@ export default function S09_BeatBoard({ currentProject }) {
                       <button onClick={() => remove(b.id)} className="text-xs font-heading font-bold text-danger hover:underline">🗑</button>
                     </div>
                   </div>
+
+                  {scenes[b.id] ? (
+                    <div className="mt-2 p-2 border-2 border-success/40 bg-success/5 rounded">
+                      <div className="flex items-center gap-2 flex-wrap text-xs">
+                        <span className={`font-bold px-2 py-0.5 rounded border ${
+                          scenes[b.id].status === 'approved'
+                            ? 'border-success text-success bg-success/20'
+                            : 'border-warn text-ink bg-warn/20'}`}>
+                          {scenes[b.id].status === 'approved' ? '✓ SCENE APPROVED' : 'SCENE DRAFT'}
+                        </span>
+                        <span className="text-ink/50 font-mono">{(sceneAssets[b.id] || []).length} assets</span>
+                      </div>
+                      {!previewDead[b.id] ? (
+                        <img src={`/api/v1/projects/${currentProject.id}/scenes/${b.id}/preview`}
+                          alt={`Scene preview ${b.id}`} loading="lazy"
+                          onError={() => setPreviewDead(p => ({ ...p, [b.id]: true }))}
+                          className="mt-2 w-full rounded border border-ink/20" />
+                      ) : (
+                        <p className="mt-2 text-xs italic text-ink/50">Preview unavailable for {b.id}.</p>
+                      )}
+                      <div className="flex gap-2 mt-2 flex-wrap">
+                        <BlockButton variant="secondary" disabled={sceneBusy === b.id || scenes[b.id].status === 'approved'}
+                          onClick={() => approveScene(b.id)}>
+                          {scenes[b.id].status === 'approved' ? '✓ Approved' : '✅ Approve scene'}
+                        </BlockButton>
+                        <BlockButton variant="secondary"
+                          onClick={() => { setFixOpen(fixOpen === b.id ? null : b.id); setFixDraft(''); }}>
+                          📝 Fix-note
+                        </BlockButton>
+                        <BlockButton variant="secondary" disabled={sceneBusy === b.id}
+                          onClick={() => regenAsset(b.id)}>
+                          🔁 Regen one asset
+                        </BlockButton>
+                      </div>
+                      {sceneMsg[b.id] && <p className="mt-1 text-xs font-heading text-primary">{sceneMsg[b.id]}</p>}
+                      {fixOpen === b.id && (
+                        <div className="mt-2">
+                          <textarea name={`fix_${b.id}`} value={fixDraft} rows={2}
+                            onChange={e => setFixDraft(e.target.value)}
+                            className="w-full bg-white border-2 border-ink rounded px-2 py-1 font-body text-xs"
+                            placeholder="What should change in the asset's next version? (sent to the beat's first SVG asset)" />
+                          <div className="flex justify-end mt-1">
+                            <BlockButton variant="secondary" disabled={sceneBusy === b.id}
+                              onClick={() => sendFixNote(b.id)}>📨 send to improve</BlockButton>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs italic text-ink/50">No scene row — plan scenes first (API).</p>
+                  )}
 
                   {openBeat === b.id && manifest && (
                     <div className="mt-2 p-2 border-2 border-info/40 bg-info/10 rounded space-y-2">
