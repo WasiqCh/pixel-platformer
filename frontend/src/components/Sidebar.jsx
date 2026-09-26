@@ -14,6 +14,7 @@ const nodes = [
   { id: 'checkpoint', label: 'Checkpoint', icon: '✅' },
   { id: 'library', label: 'Library', icon: '📚' },
   { id: 'beats', label: 'Beats', icon: '🎬' },
+  { id: 'assets', label: 'Assets', icon: '🖼️' },
   { id: 'handoff', label: 'Handoff', icon: '🚀' },
   { id: 'stats', label: 'Stats', icon: '📈' },
   { id: 'prompts', label: 'Prompts & runs', icon: '🧾' },

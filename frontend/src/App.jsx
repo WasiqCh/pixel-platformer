@@ -14,6 +14,7 @@ import S08_WorldDesk from './screens/S08_WorldDesk'
 import S09_BeatBoard from './screens/S09_BeatBoard'
 import S10_Sheets from './screens/S10_Sheets'
 import S11_Library from './screens/S11_Library'
+import S15_Assets from './screens/S15_Assets'
 import S12_Export from './screens/S12_Export'
 import S13_Checkpoint from './screens/S13_Checkpoint'
 import S14_Handoff from './screens/S14_Handoff'
@@ -30,7 +31,7 @@ function App() {
   const [staleBusy, setStaleBusy] = useState(false)
   const [staleMsg, setStaleMsg] = useState('')
 
-  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'export', 'checkpoint', 'handoff', 'settings', 'prompts']
+  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'assets', 'export', 'checkpoint', 'handoff', 'settings', 'prompts']
 
   useEffect(() => {
     fetch('/api/v1/settings')
@@ -168,6 +169,10 @@ function App() {
 
             {activeNode === 'library' && (
               <S11_Library currentProject={currentProject} />
+            )}
+
+            {activeNode === 'assets' && (
+              <S15_Assets currentProject={currentProject} />
             )}
 
             {activeNode === 'export' && (
