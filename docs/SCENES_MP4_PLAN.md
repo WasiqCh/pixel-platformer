@@ -324,7 +324,56 @@ previous SVG *code* + text note only. Needs its own ticket when scheduled.
   generation + approval against real models before any real video. Machinery exists
   (re-plan replace, improve, revert, hash-cache raster).
 - **D8 pipeline buttons (owner request 2026-09-27 — highest priority, current pain).**
-  Ticketed below as D8-T01 (single frontend-only ticket).
+  Ticketed below as D8-T01 (single frontend-only ticket, DONE).
+
+### D1+D2 — ASSET CONTROL (owner priority 2026-09-27; after D8)
+
+Why: the owner + Dawood judge assets one by one and bring their own code from
+external AI. Beats approve whole; assets fix small — per asset, with provenance
+visible and paste-in supported. Four tickets, in order.
+
+**D1-T01 — Per-asset Fix/Regen on the beat strip (frontend-only).**
+Today Fix-note/Regen hit the beat's first SVG asset (P3-T02 shortcut). Every
+asset chip on the scene strip gets its own Fix + Regen buttons wired to the
+existing per-generation endpoints (`POST .../generate/svg/{gen_id}/improve
+{note}`, `POST .../generate/svg/{gen_id}`); library-matched assets show why
+they have no buttons (nothing to redraw — honest inline note, current behavior
+kept). No new endpoints, no backend changes.
+*Acceptance: on a multi-asset beat, fix-note targets the clicked asset only
+(proven by distinct version bumps on two different gens); lint 0 errors.*
+
+**D2-T01 — Assets page (read + badges + copy-prompt).**
+New screen in the `S##_` pattern, registered in `App.jsx` `activeNode` (no new
+router lib): every project asset in one list — scene needs with provenance
+badge (GENERATED: `needs_generate` + gen status / LIBRARY: `library_ref` /
+PASTED: generation source flag when D2-T02 lands — badge logic must already
+handle it) + status + preview thumbnail (existing image endpoints; labelled box
+when no PNG). Copy-prompt button per svg gen copies the exact stored prompt
+(the same text P2-T04 sends the model) to clipboard. Read-only ticket: no
+writes, no new endpoints (existing list endpoints only).
+*Acceptance: page lists all 107 CH03_EP02 needs with correct badges; copy-prompt
+output byte-equals the row's stored prompt; lint 0 errors.*
+
+**D2-T02 — Paste-code + bring-my-own (backend + page wiring).**
+`POST /projects/{id}/generate/svg/{gen_id}/paste {code}`: validates pasted code
+through the real `SvgGen`/`validate_svg_text` path (unsafe code rejected with
+the same messages AI output gets), writes versioned `_vN.svg`, moves the newest
+pointer (history intact — same semantics as improve). Works on pending rows
+(skip-generation: user brings code instead of AI) and on generated rows (new
+version). Page wires paste box + per-asset "bring my own" toggle (sets a
+`source='pasted'` marker on first paste so the D2-T01 badge reads PASTED).
+*Acceptance: paste valid code → new version + pointer; paste `<script>` →
+400 with validator message, nothing written; pending row heals via paste;
+badge flips to PASTED; old versions + revert intact.*
+
+**D2-T03 — Playground (validate + raster, no project writes).**
+`POST /projects/{id}/svg-playground {code}`: validates (same path), rasters via
+the P2-T06 Inkscape probe to a temp PNG (hash-named under `%TEMP%`, never into
+project dirs), returns the PNG for preview + download. Page section: code box →
+Preview button → PNG shown → Download button. Nothing touches scenes/gens/library.
+*Acceptance: valid code → 1920×1080 PNG downloads and opens; invalid code →
+validator message, no file; two identical pastes → same bytes (cache);
+project DB byte-identical before/after (prove with a hash or row counts).*
 
 ### D4 — LOCAL KOKORO VOICE (owner priority; implement before D1–D3/D5–D7)
 
