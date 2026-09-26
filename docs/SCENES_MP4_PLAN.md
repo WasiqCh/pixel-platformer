@@ -326,7 +326,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P2-T05 | ✅ | 86ff88e | POST .../svg/{gen_id}/improve {note} (shared _build_svg_context: style+asset desc+previous_svg+fix_note → _v(N+1), never overwrite) + POST .../revert {version} (pointer only, history intact) + GET versions; CH03_EP02 live via :20128: gen43 v1→v2 (job_log 217 ok) hashes differ, revert→v1 both files intact; guards 400 empty-note/no-prior, 404 unknown version |
 | P2-T06 | ✅ | 75ad48d | POST .../svg/{gen_id}/approve (Inkscape probe INKSCAPE_PATH→PATH→MSIX glob/appx, never hard-coded; 06_sheets/raster/<base>_<hash12>.png; identical hash = cache hit, no re-raster; file_path = PNG so existing image endpoint serves render) + POST .../finalize (approved→final) ; UI shows PNG never SVG (S11_Library img via image endpoint + ✓/★ buttons); CH03_EP02 live: 5 PNGs (43v1/v2, 97v1/v2, 44v1), re-approve cached:true, image endpoint 200 image/png |
 | P2-T07 | ✅ | uncommitted | Phase 2 gate PASS (audit-only, no code change): CH03_EP02 93 svg (approved 2 + final 1 PNGs on disk 3/3, error 4/4 with message, generated stuck 0, pending 86 untouched sampling); structural gaps 0 (dangling 0, stranded 0, XOR 0, beat-missing 0); 86 pending = coverage not stranding (gateway :20128 flaky), structural scope per owner, not quality review |
-| P3-T01 | ⬜ | | |
+| P3-T01 | ✅ | uncommitted | GET /projects/{id}/scenes/{beat_id}/preview (scenes.py): Pillow 1920x1080 place+needs composite, x/y/scale-or-framing default, fit/letterbox never stretch, missing=labelled box, hash cache 07_beats/previews/; CH03_EP02 B01-B10 all 1920x1080, B01 missing 2/4 edge_px 30232, re-fetch cached:true |
 | P3-T02 | ⬜ | | |
 | P3-T03 | ⬜ | | |
 | P3-T04 | ⬜ | | Phase 3 gate |

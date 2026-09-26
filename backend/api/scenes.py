@@ -1,11 +1,13 @@
 # backend/api/scenes.py
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.config import DATA_DIR
@@ -480,3 +482,349 @@ async def list_scene_assets(project_id: str):
         rows = [dict(r) for r in await cur.fetchall()]
     await proj_db.close()
     return rows
+
+
+# --- SCENES-MP4 P3-T01: server-side scene preview (Pillow composite, no new deps) ---
+# Canvas is fixed 1920x1080. Place layer fills the canvas; each scene_asset
+# draws into its x/y/scale box (0-1 fractions from beat_elements when a
+# matching placement exists, else a deterministic default from framing/kind).
+# Aspect rule (architect constraint from the T06 review): raster PNGs are
+# fixed 1920x1080, so every paste is letterbox/fit — uniform scale,
+# centered, NEVER stretched. Missing asset = honest labelled box, never a
+# silent blank. Previews cache per scene-hash under 07_beats/previews/.
+
+_PRE_W, _PRE_H = 1920, 1080
+_PRE_BG = (26, 29, 41)
+_MISSING_FILL = (58, 58, 64)
+_MISSING_EDGE = (255, 85, 85)
+
+_FRAMING_SCALE = {
+    "close": 0.55, "medium": 0.42, "wide": 0.32,
+    "full": 0.85, "establishing": 0.85, "long": 0.32,
+}
+_LAYER_RANK = {"background": 0, "midground": 1, "foreground": 2, "insert": 3}
+
+
+def _valid_frac(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= float(v) <= 1
+
+
+def _framing_scale(framing: str, kind: str) -> float:
+    f = (framing or "").strip().lower()
+    if f in _FRAMING_SCALE:
+        return _FRAMING_SCALE[f]
+    # No framing hint (generated misses carry kind only): places read wide,
+    # everything else reads medium.
+    if (kind or "").lower() in ("place", "photo"):
+        return _FRAMING_SCALE["wide"]
+    return _FRAMING_SCALE["medium"]
+
+
+def _default_box(i: int, n: int, framing: str, kind: str) -> tuple[float, float, float]:
+    """Deterministic default box (fractions). Single asset centers; rows of
+    2+ spread left-to-right, bottom-anchored so boxes never fully overlap."""
+    scale = _framing_scale(framing, kind)
+    # A lone place/photo is an establishing view — let it read large.
+    if n == 1 and (kind or "").lower() in ("place", "photo"):
+        scale = 0.85
+    scale = min(max(float(scale), 0.05), 1.0)
+    if n <= 1:
+        x = (1.0 - scale) / 2.0
+        y = (1.0 - scale) / 2.0
+    else:
+        span = max(0.92 - scale, 0.0)
+        x = 0.04 + (span * i / (n - 1) if n > 1 else 0.0)
+        y = 0.92 - scale
+        x = min(max(float(x), 0.0), max(1.0 - scale, 0.0))
+        y = min(max(float(y), 0.02), max(1.0 - scale, 0.02))
+    return float(x), float(y), float(scale)
+
+
+def _paste_fit(canvas, img, box: tuple[int, int, int, int]) -> None:
+    """Letterbox/fit paste: uniform scale to fit inside box, centered, never
+    stretched. Box margins show whatever is behind (the place layer)."""
+    from PIL import Image as _Image
+
+    bx, by, bw, bh = (int(v) for v in box)
+    if bw <= 0 or bh <= 0:
+        return
+    sw, sh = img.size
+    if sw <= 0 or sh <= 0:
+        return
+    s = min(bw / sw, bh / sh)
+    if s <= 0:
+        return
+    nw, nh = max(1, int(sw * s)), max(1, int(sh * s))
+    resized = img.resize((nw, nh), _Image.LANCZOS)
+    ox, oy = bx + (bw - nw) // 2, by + (bh - nh) // 2
+    if resized.mode in ("RGBA", "LA"):
+        canvas.paste(resized, (ox, oy), resized)
+    else:
+        if resized.mode == "P":
+            resized = resized.convert("RGBA")
+            canvas.paste(resized, (ox, oy), resized)
+        else:
+            if resized.mode != "RGB":
+                resized = resized.convert("RGB")
+            canvas.paste(resized, (ox, oy))
+
+
+def _draw_labelled_box(canvas, box: tuple[int, int, int, int],
+                       title: str, reason: str) -> None:
+    """Honest missing-asset box: filled + red border + two centered lines.
+    Called for EVERY unresolvable asset — never leave a silent blank."""
+    from PIL import ImageDraw as _Draw
+
+    bx, by, bw, bh = (int(v) for v in box)
+    d = _Draw.Draw(canvas)
+    d.rectangle([bx, by, bx + bw, by + bh],
+                fill=_MISSING_FILL, outline=_MISSING_EDGE, width=4)
+    line1 = f"MISSING: {(title or 'asset')[:30]}"
+    line2 = (reason or "no file")[:46]
+    # Default bitmap font — no new dependency, always available.
+    b1 = d.textbbox((0, 0), line1)
+    b2 = d.textbbox((0, 0), line2)
+    t1w, t1h = b1[2] - b1[0], b1[3] - b1[1]
+    t2w, t2h = b2[2] - b2[0], b2[3] - b2[1]
+    cx = bx + bw // 2
+    cy = by + bh // 2
+    d.text((cx - t1w // 2, cy - t1h - 2), line1, fill=(255, 255, 255))
+    d.text((cx - t2w // 2, cy + 2), line2, fill=(255, 220, 120))
+
+
+def _file_hash(p: Path) -> str:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+@router.get("/projects/{project_id}/scenes/{beat_id}/preview")
+async def scene_preview(project_id: str, beat_id: str):
+    from PIL import Image as _Image
+    from PIL import ImageDraw as _Draw
+
+    folder, _ch_id = await _get_proj_info(project_id)
+    base = Path(DATA_DIR) / "projects" / folder
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+                "SELECT * FROM beats WHERE id=? AND project_id=?",
+                (beat_id, project_id)) as cur:
+            beat = await cur.fetchone()
+        if not beat:
+            raise HTTPException(404, "Beat not found")
+        beat = dict(beat)
+        async with proj_db.execute(
+                "SELECT * FROM scenes WHERE beat_id=?", (beat_id,)) as cur:
+            scene = await cur.fetchone()
+        if not scene:
+            raise HTTPException(404, "No scene for this beat — plan scenes first.")
+        scene = dict(scene)
+        async with proj_db.execute(
+                "SELECT * FROM scene_assets WHERE beat_id=? ORDER BY id",
+                (beat_id,)) as cur:
+            needs = [dict(r) for r in await cur.fetchall()]
+        async with proj_db.execute(
+                "SELECT * FROM beat_elements WHERE beat_id=? ORDER BY sort_order",
+                (beat_id,)) as cur:
+            elements = [dict(r) for r in await cur.fetchall()]
+        async with proj_db.execute(
+                "SELECT id, asset_ref, title, file_path, status FROM library WHERE project_id=?",
+                (project_id,)) as cur:
+            lib_rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await proj_db.close()
+
+    lib_by_id = {r["id"]: r for r in lib_rows}
+    els_by_asset: dict[str, dict] = {}
+    for el in elements:
+        els_by_asset.setdefault(el["asset_ref"], el)
+
+    # --- resolve place layer ---
+    place_ref = scene.get("place_asset_ref")
+    place_title, place_rel, place_reason = "", "", ""
+    place_path = None
+    if place_ref:
+        hit = next((r for r in lib_rows if r["asset_ref"] == place_ref), None)
+        if hit and (hit["file_path"] or "").strip():
+            cand = base / hit["file_path"]
+            if cand.exists() and cand.stat().st_size > 0:
+                place_path, place_rel = cand, hit["file_path"]
+                place_title = hit["title"] or place_ref
+            else:
+                place_title = hit["title"] or place_ref
+                place_reason = f"file missing: {hit['file_path'] or '(none)'}"
+        else:
+            # Title for the honest box even when no library row exists.
+            proj_db2 = await get_project_db(folder)
+            try:
+                async with proj_db2.execute(
+                        "SELECT name FROM environments WHERE id=? AND project_id=?",
+                        (place_ref, project_id)) as cur:
+                    er = await cur.fetchone()
+                place_title = (er["name"] if er else place_ref) or place_ref
+            finally:
+                await proj_db2.close()
+            place_reason = "no library file" if hit is None else "library empty"
+    else:
+        place_title, place_reason = "(none)", "no place ref on scene"
+
+    # --- resolve + place each need ---
+    items: list[dict] = []
+    for idx, nd in enumerate(needs):
+        kind = (nd.get("kind") or "prop").lower()
+        hint = None
+        lib = lib_by_id.get(nd.get("library_ref") or "") if nd.get("library_ref") else None
+        if lib:
+            hint = els_by_asset.get(lib.get("asset_ref") or "")
+        framing_eff = (hint.get("framing") if hint else "") or (
+            "wide" if kind in ("place", "photo") else "medium")
+        dx, dy, ds = _default_box(idx, max(len(needs), 1), framing_eff, kind)
+        x = float(hint["x"]) if hint and _valid_frac(hint.get("x")) else dx
+        y = float(hint["y"]) if hint and _valid_frac(hint.get("y")) else dy
+        s = float(hint["scale"]) if hint and _valid_frac(hint.get("scale")) else ds
+        s = min(max(s, 0.05), 1.0)
+        x = min(max(x, 0.0), max(1.0 - s, 0.0))
+        y = min(max(y, 0.0), max(1.0 - s, 0.0))
+        layer = (hint.get("layer") if hint else "") or (
+            "background" if kind in ("place", "photo") else "midground")
+
+        rel, reason, path, fhash = "", "", None, ""
+        if nd.get("library_ref"):
+            if lib is None:
+                reason = f"library {nd['library_ref']} missing"
+            elif not (lib["file_path"] or "").strip():
+                reason = f"library {lib['id']} empty"
+            else:
+                cand = base / lib["file_path"]
+                if cand.exists() and cand.stat().st_size > 0:
+                    path, rel, fhash = cand, lib["file_path"], _file_hash(cand)
+                else:
+                    reason = f"file missing: {lib['file_path']}"
+        elif nd.get("needs_generate"):
+            proj_db3 = await get_project_db(folder)
+            try:
+                async with proj_db3.execute(
+                        "SELECT id, file_path, status, error FROM generations WHERE id=?",
+                        (nd.get("generation_id"),)) as cur:
+                    grow = await cur.fetchone()
+            finally:
+                await proj_db3.close()
+            if not grow:
+                reason = f"generation {nd.get('generation_id')} missing"
+            else:
+                grow = dict(grow)
+                fp = (grow["file_path"] or "").strip()
+                if fp:
+                    cand = base / fp
+                    if cand.exists() and cand.stat().st_size > 0:
+                        path, rel, fhash = cand, fp, _file_hash(cand)
+                    else:
+                        reason = f"file missing: {fp} (gen {grow['id']}, {grow['status']})"
+                else:
+                    reason = f"svg {grow['status']} (gen {grow['id']})"
+        else:
+            reason = "unresolved (neither branch)"
+        items.append({"need": nd, "kind": kind, "framing": framing_eff,
+                      "x": x, "y": y, "scale": s, "layer": layer,
+                      "path": path, "rel": rel, "reason": reason, "fhash": fhash})
+
+    items.sort(key=lambda it: (_LAYER_RANK.get(it["layer"], 1), it["need"]["id"]))
+
+    # --- scene-hash cache key ---
+    canon = {
+        "beat_id": beat_id,
+        "place_asset_ref": place_ref,
+        "shot": scene.get("shot") or "",
+        "scene_updated_at": scene.get("updated_at") or "",
+        "elements": [
+            {"id": e["id"], "asset_ref": e["asset_ref"], "x": e.get("x"),
+             "y": e.get("y"), "scale": e.get("scale"),
+             "framing": e.get("framing"), "layer": e.get("layer")}
+            for e in elements
+        ],
+        "needs": [
+            {"id": it["need"]["id"], "name": it["need"]["name"],
+             "kind": it["kind"], "library_ref": it["need"].get("library_ref"),
+             "generation_id": it["need"].get("generation_id"),
+             "rel": it["rel"], "fhash": it["fhash"], "reason": it["reason"],
+             "x": it["x"], "y": it["y"], "scale": it["scale"]}
+            for it in items
+        ],
+        "place": {"rel": place_rel, "fhash": _file_hash(place_path) if place_path else "",
+                  "reason": place_reason},
+    }
+    full_hash = hashlib.sha256(
+        json.dumps(canon, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    short = full_hash[:12]
+    prev_dir = base / "07_beats" / "previews"
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    dest = prev_dir / f"{beat_id}_{short}.png"
+    missing = sum(1 for it in items if it["path"] is None) + (1 if place_path is None else 0)
+
+    if dest.exists() and dest.stat().st_size > 0:
+        return FileResponse(
+            dest, media_type="image/png",
+            headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "true",
+                     "X-Missing-Count": str(missing),
+                     "X-Assets-Total": str(len(items) + 1)})
+
+    # --- render ---
+    canvas = _Image.new("RGB", (_PRE_W, _PRE_H), _PRE_BG)
+    if place_path is not None:
+        try:
+            with _Image.open(place_path) as pim:
+                pim = pim.convert("RGB")
+                _paste_fit(canvas, pim, (0, 0, _PRE_W, _PRE_H))
+        except Exception as e:
+            _draw_labelled_box(
+                canvas, (int(_PRE_W * 0.04), int(_PRE_H * 0.04),
+                         int(_PRE_W * 0.92), int(_PRE_H * 0.92)),
+                f"PLACE {place_ref or ''} {place_title or ''}".strip(),
+                f"unreadable PNG: {type(e).__name__}"[:46])
+            missing += 0  # already counted as present-path; keep honest box instead
+    else:
+        _draw_labelled_box(
+            canvas, (int(_PRE_W * 0.04), int(_PRE_H * 0.04),
+                     int(_PRE_W * 0.92), int(_PRE_H * 0.92)),
+            f"PLACE {place_ref or '(none)'} {place_title or ''}".strip(),
+            place_reason[:46] or "no file")
+
+    for it in items:
+        bw, bh = int(it["scale"] * _PRE_W), int(it["scale"] * _PRE_H)
+        bx, by = int(it["x"] * _PRE_W), int(it["y"] * _PRE_H)
+        # Clamp inside canvas (x/y already clamped as fractions; belt-and-braces).
+        bx = min(max(bx, 0), _PRE_W - 1)
+        by = min(max(by, 0), _PRE_H - 1)
+        bw = min(bw, _PRE_W - bx)
+        bh = min(bh, _PRE_H - by)
+        if it["path"] is not None:
+            try:
+                with _Image.open(it["path"]) as aim:
+                    if aim.mode in ("RGBA", "LA", "P"):
+                        aim = aim.convert("RGBA")
+                    else:
+                        aim = aim.convert("RGB")
+                    _paste_fit(canvas, aim, (bx, by, bw, bh))
+                continue
+            except Exception as e:
+                it["reason"] = f"unreadable PNG: {type(e).__name__}"[:46]
+        _draw_labelled_box(canvas, (bx, by, bw, bh),
+                           it["need"]["name"] or "asset", it["reason"])
+
+    # Beat tag (top-left) so the PNG is traceable without its filename.
+    d = _Draw.Draw(canvas)
+    tag = f"{beat_id} — {(scene.get('shot') or '')[:90]}"
+    tb = d.textbbox((0, 0), tag)
+    pad = 8
+    d.rectangle([10, 10, 10 + (tb[2] - tb[0]) + pad * 2,
+                 10 + (tb[3] - tb[1]) + pad * 2], fill=(0, 0, 0))
+    d.text((10 + pad, 10 + pad), tag, fill=(255, 255, 255))
+
+    canvas.save(dest, "PNG")
+    return FileResponse(
+        dest, media_type="image/png",
+        headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "false",
+                 "X-Missing-Count": str(missing),
+                 "X-Assets-Total": str(len(items) + 1)})
