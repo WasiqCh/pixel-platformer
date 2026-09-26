@@ -79,8 +79,32 @@ async def checkpoint(project_id: str):
 
     req = [c for c in checks if c["required"]]
     passed = sum(1 for c in req if c["ok"])
+    # SCENES-MP4 P3-T03: the ONE blocking gate for S13 — render readiness
+    # (scenes approved + beat audio). Advisory here (never blocks advance);
+    # the POST /projects/{id}/render endpoint enforces it with a 409.
+    try:
+        from backend.api.render import render_gate as _render_gate
+        _rg = await _render_gate(project_id)
+        render_gate = {
+            "can_render": _rg["can_render"],
+            "total_beats": _rg["total_beats"],
+            "approved": _rg["approved"],
+            "unapproved": len(_rg["unapproved"]),
+            "stale": len(_rg["stale_scenes"]),
+            "missing_audio": len(_rg["missing_audio"]),
+            "message": _rg["message"],
+        }
+    except HTTPException as e:
+        render_gate = {"can_render": False, "total_beats": 0, "approved": 0,
+                       "unapproved": 0, "stale": 0, "missing_audio": 0,
+                       "message": f"Render gate error: {e.detail}"}
+    except Exception as e:
+        render_gate = {"can_render": False, "total_beats": 0, "approved": 0,
+                       "unapproved": 0, "stale": 0, "missing_audio": 0,
+                       "message": f"Render gate error: {type(e).__name__}: {e}"}
     return {"checks": checks, "required_pass": passed, "required_total": len(req),
-            "can_advance": passed == len(req), "stage": proj.get("stage") or "script"}
+            "can_advance": passed == len(req), "stage": proj.get("stage") or "script",
+            "render_gate": render_gate}
 
 
 @router.post("/projects/{project_id}/checkpoint/advance")

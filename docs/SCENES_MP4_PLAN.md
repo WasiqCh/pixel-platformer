@@ -332,7 +332,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | P2-T07 | ✅ | uncommitted | Phase 2 gate PASS (audit-only, no code change): CH03_EP02 93 svg (approved 2 + final 1 PNGs on disk 3/3, error 4/4 with message, generated stuck 0, pending 86 untouched sampling); structural gaps 0 (dangling 0, stranded 0, XOR 0, beat-missing 0); 86 pending = coverage not stranding (gateway :20128 flaky), structural scope per owner, not quality review |
 | P3-T01 | ✅ | uncommitted | GET /projects/{id}/scenes/{beat_id}/preview (scenes.py): Pillow 1920x1080 place+needs composite, x/y/scale-or-framing default, fit/letterbox never stretch, missing=labelled box, hash cache 07_beats/previews/; CH03_EP02 B01-B10 all 1920x1080, B01 missing 2/4 edge_px 30232, re-fetch cached:true |
 | P3-T02 | ✅ | uncommitted | S09 beat cards: preview <img> (GET scenes/{beat}/preview, lazy, onError fallback) + 3-button row (approve=PUT status real, fix-note→svg improve {note} real via beat's first gen asset, regen=POST svg/{gen} real; beats with no SVG asset get honest inline msg — no scene-level AI endpoint exists); CH03_EP02 B01-B10 approved 1 click each; lint 0 errors (24 pre-existing warnings, 0 from S09) |
-| P3-T03 | ⬜ | | |
+| P3-T03 | ✅ | uncommitted | POST /projects/{id}/render gate-only (409 while any scene unapproved/stale or any beat lacks wav; 200 ready when 30/30 approved + audio) + GET .../render/check + additive render_gate on checkpoint (required gates untouched); CH03_EP02 live: reject 409 (20 unapproved + 30 no-wav) AND pass 200 (temp approve-all + 30 silent WAVs), state reverted 10/20 + no voiceover dir; no frontend |
 | P3-T04 | ⬜ | | Phase 3 gate |
 | P4-T01 | ⬜ | | |
 | P4-T02 | ⬜ | | |
