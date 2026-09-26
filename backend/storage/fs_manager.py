@@ -34,6 +34,7 @@ def create_project_dirs(channel_id: str, project_id: str):
         "06_sheets/raster",
         "07_beats/prompts", 
         "07_beats/one_offs",
+        "07_render/frames",
         "08_handoff", 
         "09_intelligence"
     ]
