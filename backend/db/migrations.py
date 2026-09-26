@@ -274,6 +274,28 @@ CREATE TABLE IF NOT EXISTS scene_assets (
         OR (library_ref IS NULL AND needs_generate = 1)
     )
 );
+
+-- 24. render_jobs (SCENES-MP4 P4-T01: persisted MP4 render progress).
+-- One row per render attempt; resume reuses the same row (keeps
+-- current_segment), a fresh render after done inserts a new row (never
+-- overwrite). status: running | cancel_requested | cancelled | done | error.
+-- current_segment = index of the NEXT segment to process (0-based), so done
+-- count = current_segment and resume continues at N, not 1. progress is 0-1.
+-- P4-T02/T03 fill in real frames/ffmpeg; T01 iterates beats-as-segments with
+-- a short placeholder step so cancel/resume mechanics are provable with no
+-- LLM calls.
+CREATE TABLE IF NOT EXISTS render_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    total_segments INTEGER NOT NULL DEFAULT 0,
+    current_segment INTEGER NOT NULL DEFAULT 0,
+    progress REAL NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    output_path TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 async def init_app_db(db_conn):
