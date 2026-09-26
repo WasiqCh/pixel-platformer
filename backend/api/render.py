@@ -26,8 +26,21 @@
 # preview, so it pixel-matches by construction. Fresh jobs wipe frame_*.png;
 # resumes keep existing frames and overwrite deterministically from the
 # computed offset (same range, same bytes — idempotent).
+#
+# P4-T03 ffmpeg probe + mux (stills v1 in, MP4 out, no LLM calls):
+# probe ffmpeg at runtime (FFMPEG_PATH env -> PATH, never hard-coded; hard
+# failure names every location tried — same discipline as the Inkscape probe
+# in generation.py). Per beat: PNG-loop (that beat's frames) + per-beat WAV
+# (08_export/voiceover/<beat_id>.wav) -> per-segment MP4 in 07_render/segments/
+# (seg_001.mp4, 1-based beat order). Then concat (ffmpeg concat demuxer,
+# -c copy) -> 08_handoff/<project>_final.mp4 (version _vN on re-render, never
+# overwrite). Never hold all frames at once: encode segment -> delete that
+# beat's frames -> next. Post-render asserts the frames dir is empty.
 
 import asyncio
+import os
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +57,107 @@ _TASKS: dict[str, asyncio.Task] = {}
 
 # Stills v1: 30 fps hold per P4-T02 spec (round(duration_sec*30) frames/beat).
 _FPS = 30
+
+# SCENES-MP4 P4-T03: ffmpeg probe (same discipline as the Inkscape probe in
+# generation.py: env override -> PATH, never hard-coded, clear error naming
+# everything tried). Only ffmpeg is probed (ffprobe is verification-only,
+# used by the acceptance check — not by the worker).
+
+
+def _probe_ffmpeg() -> tuple[str, str, list[str]]:
+    """Probe for the ffmpeg binary. Returns (path, source, tried).
+
+    source is one of 'env' | 'PATH'.
+    tried lists every location checked (for the clear-error rule).
+    Raises FileNotFoundError naming every location tried when not found.
+    """
+    tried: list[str] = []
+    env = (os.environ.get("FFMPEG_PATH") or "").strip().strip('"')
+    if env:
+        tried.append(f"FFMPEG_PATH={env}")
+        if os.path.isfile(env):
+            return env, "env", tried
+        tried.append(f"FFMPEG_PATH missing on disk: {env}")
+    else:
+        tried.append("FFMPEG_PATH=(unset)")
+    which = shutil.which("ffmpeg")
+    tried.append(f"PATH:ffmpeg={'found ' + which if which else 'not found'}")
+    if which and os.path.isfile(which):
+        return which, "PATH", tried
+    raise FileNotFoundError(
+        "ffmpeg not found. Tried: " + " | ".join(tried))
+
+
+def _next_final_path(handoff_dir: Path, project_id: str) -> Path:
+    """Versioned final output (never overwrite): <project>_final.mp4 first,
+    then <project>_final_v2.mp4, _v3, ... Picks the first name not on disk."""
+    first = handoff_dir / f"{project_id}_final.mp4"
+    if not first.exists():
+        return first
+    n = 2
+    while True:
+        cand = handoff_dir / f"{project_id}_final_v{n}.mp4"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def _delete_beat_frames(frames_dir: Path, first_num: int, count: int) -> None:
+    """Delete one beat's frames (encode -> delete -> next; never hold all)."""
+    for k in range(count):
+        try:
+            (frames_dir / f"frame_{first_num + k:06d}.png").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _frames_remaining(frames_dir: Path) -> list[str]:
+    try:
+        return sorted(p.name for p in frames_dir.glob("frame_*.png"))
+    except OSError:
+        return []
+
+
+def _run_cmd(cmd: list[str], timeout: int) -> None:
+    """Blocking subprocess runner (called via asyncio.to_thread so the event
+    loop stays live for status/cancel polls). Raises RuntimeError with the
+    stderr tail when ffmpeg exits non-zero."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ffmpeg timed out after {timeout}s: {' '.join(cmd[:4])}... "
+                           f"({type(e).__name__})")
+    except Exception as e:
+        raise RuntimeError(f"ffmpeg crashed: {type(e).__name__}: {str(e)[:200]}")
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or f"exit {r.returncode}")[-300:]
+        raise RuntimeError(f"ffmpeg failed (exit {r.returncode}): {err}")
+
+
+def _encode_segment(ffmpeg: str, frames_dir: Path, first_num: int, count: int,
+                    wav: Path, seg_path: Path) -> None:
+    """One beat's frames + its WAV -> one segment MP4. -y so a resume redo of
+    the in-flight beat overwrites deterministically (idempotent). -shortest
+    keeps A/V in sync when the rounded frame hold differs from the WAV by a
+    fraction of a frame; -frames:v caps the image2 reader to this beat."""
+    cmd = [ffmpeg, "-y",
+           "-framerate", str(_FPS), "-start_number", str(first_num),
+           "-i", str(frames_dir / "frame_%06d.png"),
+           "-i", str(wav),
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(_FPS),
+           "-c:a", "aac", "-b:a", "192k",
+           "-frames:v", str(count),
+           "-shortest",
+           str(seg_path)]
+    _run_cmd(cmd, timeout=300)
+
+
+def _concat_final(ffmpeg: str, list_file: Path, final_path: Path) -> None:
+    """Concat demuxer with -c copy (all segments share codec params). -y is
+    safe: final_path is a fresh versioned name that must not exist yet."""
+    cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0",
+           "-i", str(list_file), "-c", "copy", str(final_path)]
+    _run_cmd(cmd, timeout=600)
 
 
 def _now() -> str:
@@ -122,13 +236,19 @@ def _write_beat_frames(src: Path, frames_dir: Path, first_num: int, count: int) 
 
 
 async def _run_render(project_id: str, folder: str, job_id: int) -> None:
-    """Background worker: one beat = one segment. P4-T02 frame step (stills
-    v1 — no LLM calls, no ffmpeg yet; P4-T03 muxes). Shape kept from P4-T01:
-    persist current_segment + progress after EVERY segment, check for
-    cooperative cancel BETWEEN segments (never mid-segment), resume from the
-    persisted current_segment."""
+    """Background worker: one beat = one segment. P4-T03: stills frame hold
+    (P4-T02) + ffmpeg per-segment mux + concat to versioned final MP4 — no
+    LLM calls. Shape kept from P4-T01: persist current_segment + progress
+    after EVERY segment, check for cooperative cancel BETWEEN segments (never
+    mid-segment), resume from the persisted current_segment."""
     proj_db = None
     try:
+        # Fail fast with a clear error naming everything tried (same
+        # discipline as the Inkscape probe) — before any heavy frame work.
+        try:
+            ffmpeg, _ff_source, _ff_tried = _probe_ffmpeg()
+        except FileNotFoundError as e:
+            raise RuntimeError(str(e))
         proj_db = await get_project_db(folder)
         async with proj_db.execute(
             "SELECT id, duration_sec FROM beats WHERE project_id=? AND stale=0 "
@@ -168,13 +288,46 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
         base = Path(DATA_DIR) / "projects" / folder
         frames_dir = base / "07_render" / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)
+        # P4-T03 dirs (mkdir = heal for old projects; fresh projects also get
+        # 07_render/segments via fs_manager).
+        segments_dir = base / "07_render" / "segments"
+        segments_dir.mkdir(parents=True, exist_ok=True)
+        handoff_dir = base / "08_handoff"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        vo_dir = base / "08_export" / "voiceover"
         if start == 0:
-            # Fresh job: never accumulate across renders.
+            # Fresh job: never accumulate across renders. Wipe frames AND
+            # segments, then claim a versioned final name (never overwrite —
+            # re-render after done mints _vN).
             for p in frames_dir.glob("frame_*.png"):
                 try:
                     p.unlink()
                 except OSError:
                     pass
+            for p in segments_dir.glob("seg_*.mp4"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            try:
+                (segments_dir / "segments.txt").unlink(missing_ok=True)
+            except OSError:
+                pass
+            final_path = _next_final_path(handoff_dir, project_id)
+            final_rel = f"08_handoff/{final_path.name}"
+            await proj_db.execute(
+                "UPDATE render_jobs SET output_path=?, updated_at=? WHERE id=?",
+                (final_rel, _now(), job_id))
+            await proj_db.commit()
+        else:
+            # Resume: keep existing segment MP4s for beats < start and the
+            # stored versioned output_path (never re-version mid-job).
+            async with proj_db.execute(
+                    "SELECT output_path FROM render_jobs WHERE id=?", (job_id,)) as cur:
+                rrow = await cur.fetchone()
+            stored_rel = (dict(rrow).get("output_path") or "") if rrow else ""
+            final_path = (base / stored_rel) if stored_rel else _next_final_path(handoff_dir, project_id)
+            final_rel = stored_rel or f"08_handoff/{final_path.name}"
         # Resume keeps existing frames and overwrites deterministically from
         # this offset (same range, same bytes — idempotent redo of the
         # in-flight beat after a mid-segment cancel).
@@ -198,7 +351,8 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
                 return
             if st != "running":
                 return
-            # --- segment work: hold approved preview for N frames ---
+            # --- segment work: hold approved preview for N frames, mux with
+            # its WAV into a per-segment MP4, then delete the frames ---
             beat_id = beat_ids[i]
             need = counts[i]
             async with proj_db.execute(
@@ -213,11 +367,24 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
                     f"(status={scd.get('status') or ''})")
             if scd.get("stale"):
                 raise RuntimeError(f"beat {beat_id}: scene stale (re-review first)")
+            wav = vo_dir / f"{beat_id}.wav"
+            if not wav.exists() or wav.stat().st_size == 0:
+                raise RuntimeError(
+                    f"beat {beat_id}: voiceover WAV missing/empty ({wav}) — "
+                    "build voiceover first")
             resp = await scenes_api.scene_preview(project_id, beat_id)
             src = Path(getattr(resp, "path", "") or "")
             if not src.name or not src.exists() or src.stat().st_size == 0:
                 raise RuntimeError(f"beat {beat_id}: preview missing ({src})")
-            await asyncio.to_thread(_write_beat_frames, src, frames_dir, next_frame, need)
+            first_num = next_frame
+            await asyncio.to_thread(_write_beat_frames, src, frames_dir, first_num, need)
+            seg_path = segments_dir / f"seg_{i + 1:03d}.mp4"
+            await asyncio.to_thread(
+                _encode_segment, ffmpeg, frames_dir, first_num, need, wav, seg_path)
+            if not seg_path.exists() or seg_path.stat().st_size == 0:
+                raise RuntimeError(f"beat {beat_id}: segment missing after encode ({seg_path})")
+            # Never hold all frames at once: this beat's frames go now.
+            _delete_beat_frames(frames_dir, first_num, need)
             next_frame += need
             # --- between-segments cancel point (second check covers a cancel
             # that landed during the segment work) ---
@@ -243,9 +410,45 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
             fin = await cur.fetchone()
         if fin and fin["status"] == "running" \
                 and fin["current_segment"] >= fin["total_segments"]:
+            # --- concat per-segment MP4s -> versioned final ---
+            seg_files = [segments_dir / f"seg_{k + 1:03d}.mp4" for k in range(total)]
+            missing_segs = [p.name for p in seg_files if not p.exists() or p.stat().st_size == 0]
+            if missing_segs:
+                raise RuntimeError(
+                    f"concat blocked: {len(missing_segs)}/{total} segments missing "
+                    f"(e.g. {', '.join(missing_segs[:3])})")
+            list_file = segments_dir / "segments.txt"
+            await asyncio.to_thread(
+                list_file.write_text,
+                "".join(f"file '{p.name}'\n" for p in seg_files), encoding="utf-8")
+            if final_path.exists():
+                raise RuntimeError(
+                    f"refusing to overwrite final ({final_path.name}) — "
+                    "version claim lost its race")
+            await asyncio.to_thread(_concat_final, ffmpeg, list_file, final_path)
+            if not final_path.exists() or final_path.stat().st_size == 0:
+                raise RuntimeError(f"final MP4 missing after concat ({final_path})")
+            # Post-render: temp frames dir must be empty (segments encode ->
+            # delete as we go, so any leftover is a leak worth failing on).
+            leftover = await asyncio.to_thread(_frames_remaining, frames_dir)
+            if leftover:
+                raise RuntimeError(
+                    f"frames dir not empty after render: {len(leftover)} left "
+                    f"(e.g. {', '.join(leftover[:3])})")
+            # Tidy temp segments (final is the artifact; a fresh re-render
+            # rebuilds them — never overwrite the versioned final).
+            for p in seg_files:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                list_file.unlink(missing_ok=True)
+            except OSError:
+                pass
             await proj_db.execute(
-                "UPDATE render_jobs SET status='done', progress=1.0, updated_at=? "
-                "WHERE id=?", (_now(), job_id))
+                "UPDATE render_jobs SET status='done', progress=1.0, output_path=?, "
+                "updated_at=? WHERE id=?", (final_rel, _now(), job_id))
             await proj_db.commit()
     except Exception as e:
         try:
@@ -354,7 +557,8 @@ async def render_gate(project_id: str) -> dict:
         message = (
             f"Render gate passed — {total}/{total} scenes approved, "
             f"{total}/{total} beats have audio, total {total_dur}s. "
-            "(P4-T02: POST /render builds still frames in 07_render/frames.)"
+            "(P4-T03: POST /render muxes per-beat MP4 segments via ffmpeg to "
+            "08_handoff/<project>_final[_vN].mp4.)"
         )
     else:
         parts = []
@@ -451,13 +655,14 @@ async def render_cancel(project_id: str):
 
 @router.post("/projects/{project_id}/render")
 async def request_render(project_id: str):
-    """Gate (409 branch, unchanged from P3-T03) + P4-T02 start/resume.
+    """Gate (409 branch, unchanged from P3-T03) + P4-T03 start/resume.
 
     Pass branch: new render inserts a render_jobs row (never overwrites a done
-    row — history intact); resume reuses the cancelled/error row from its
-    persisted current_segment. Launches asyncio.create_task (generation.py /
-    voiceover.py pattern); poll GET .../render/status for persisted progress.
-    No LLM calls, no ffmpeg in this ticket — stills only (P4-T03 muxes)."""
+    row — history intact; output is a versioned 08_handoff/<project>_final[_vN]
+    .mp4 name, never overwrite); resume reuses the cancelled/error row from
+    its persisted current_segment. Launches asyncio.create_task (generation.py
+    / voiceover.py pattern); poll GET .../render/status for persisted progress.
+    No LLM calls — stills hold + ffmpeg mux only."""
     gate = await render_gate(project_id)
     if not gate["can_render"]:
         raise HTTPException(409, gate["message"])
@@ -491,7 +696,12 @@ async def request_render(project_id: str):
             resumed = True
         else:
             total = gate["total_beats"]
-            output_path = f"08_handoff/{project_id}_final.mp4"
+            # Claim the versioned final name now (first free _final[_vN].mp4)
+            # so status shows the real target from the start; the worker
+            # re-claims on fresh start (same result — first free name).
+            handoff_dir = Path(DATA_DIR) / "projects" / folder / "08_handoff"
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            output_path = f"08_handoff/{_next_final_path(handoff_dir, project_id).name}"
             now = _now()
             cur = await proj_db.execute(
                 "INSERT INTO render_jobs (project_id, status, total_segments, "
@@ -514,6 +724,6 @@ async def request_render(project_id: str):
     out["message"] = (
         f"{'Resumed' if resumed else 'Started'} render job {job_id} "
         f"at segment {job['current_segment']}/{job['total_segments']} "
-        f"(P4-T02 stills: hold approved preview round(duration*30) frames in "
-        f"07_render/frames; no ffmpeg yet).")
+        f"(P4-T03: per-beat PNG-loop + WAV -> segment MP4 -> concat to "
+        f"{job['output_path']}; frames deleted per segment).")
     return out
