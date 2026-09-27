@@ -297,6 +297,192 @@ def _map_need_kind_to_library(kind: str) -> str:
     return "world"
 
 
+# --- SCENES-MP4 D9-T03: World Desk as asset source + map honesty ---
+# Asset planning also matches world_records (photo/logo/meme kinds with files
+# from the Download Desk) as photo/insert-layer assets; the compositor pastes
+# them like any asset. Map-trigger (MT) records resolve to an honest labelled
+# "map coming" box — never a silent blank, never a faked map.
+# Shape: BE-driven injection (beat_elements RW/MT cites) + an MT guard on the
+# LLM-need path (an LLM need that matches an MT world becomes an honesty row,
+# never an SVG miss). No new tables, no new AI jobs, no frontend changes.
+# World rows are kind='photo', library_ref set, needs_generate=0 — so the
+# existing XOR CHECK holds and the trace query is a join through
+# library.asset_ref = world_records.id.
+
+_MAP_BOX_FILL = (48, 72, 110)
+_MAP_BOX_EDGE = (77, 195, 255)
+
+
+def _draw_map_coming_box(canvas, box: tuple[int, int, int, int],
+                         world_id: str, world_text: str) -> None:
+    """Honest MT box: filled + blue border + two centered lines.
+
+    Called for EVERY map-trigger asset — never a silent blank, never a faked
+    map. Uses the ONE shared TTF helper (_overlay_font) — never PIL's bitmap
+    default silently (D9-T02 single-renderer rule)."""
+    from PIL import ImageDraw as _Draw
+
+    bx, by, bw, bh = (int(v) for v in box)
+    d = _Draw.Draw(canvas)
+    d.rectangle([bx, by, bx + bw, by + bh],
+                fill=_MAP_BOX_FILL, outline=_MAP_BOX_EDGE, width=4)
+    line1 = f"MAP COMING: {(world_id or 'map')[:30]}"
+    line2 = (world_text or "map triggered — no auto map yet")[:46]
+    font = _overlay_font(28)
+    b1 = d.textbbox((0, 0), line1, font=font)
+    b2 = d.textbbox((0, 0), line2, font=font)
+    t1w, t1h = b1[2] - b1[0], b1[3] - b1[1]
+    t2w, t2h = b2[2] - b2[0], b2[3] - b2[1]
+    cx = bx + bw // 2
+    cy = by + bh // 2
+    d.text((cx - t1w // 2, cy - t1h - 2), line1, font=font, fill=(255, 255, 255),
+           stroke_width=1, stroke_fill=(0, 0, 0))
+    d.text((cx - t2w // 2, cy + 2), line2, font=font, fill=(255, 220, 120),
+           stroke_width=1, stroke_fill=(0, 0, 0))
+
+
+def _is_map_world(world: dict | None) -> bool:
+    return bool(world) and (world.get("type") or "").strip().lower() == "map_trigger"
+
+
+async def _load_world_index(proj_db, project_id: str):
+    """World Desk index for D9-T03 matching. Worlds: stale=0, any status except
+    dismissed (pending worlds with Download Desk files still count — approval
+    is a review gate, not a file gate). Libraries: kind='world' slots."""
+    async with proj_db.execute(
+        "SELECT id, type, text, search_query FROM world_records "
+        "WHERE project_id=? AND stale=0 AND status!='dismissed'",
+        (project_id,)) as cur:
+        worlds = [dict(r) for r in await cur.fetchall()]
+    async with proj_db.execute(
+        "SELECT id, asset_ref, title, file_path, status FROM library "
+        "WHERE project_id=? AND kind='world'",
+        (project_id,)) as cur:
+        libs = [dict(r) for r in await cur.fetchall()]
+    lib_by_ref = {l["asset_ref"]: l for l in libs if l.get("asset_ref")}
+    world_by_id = {w["id"]: w for w in worlds if w.get("id")}
+    return worlds, world_by_id, lib_by_ref
+
+
+def _world_file_ready(base: Path, lib_row: dict | None) -> bool:
+    if not lib_row:
+        return False
+    fp = (lib_row.get("file_path") or "").strip()
+    if not fp:
+        return False
+    try:
+        cand = base / fp
+        return cand.exists() and cand.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _need_matches_mt(need: dict, worlds: list[dict]):
+    """LLM-need MT guard: does this need name/query match an MT world text or
+    search_query (same _entry_matches the library path uses)? Returns the MT
+    world dict or None. MT matches must NEVER become SVG misses (faked maps)."""
+    for w in worlds:
+        if (w.get("type") or "").strip().lower() != "map_trigger":
+            continue
+        if _entry_matches(need.get("name") or "", need.get("search_query") or "",
+                           w.get("text") or ""):
+            return w
+        sq = (w.get("search_query") or "").strip()
+        if sq and _entry_matches(need.get("name") or "", need.get("search_query") or "", sq):
+            return w
+    return None
+
+
+async def _ensure_library_slot(proj_db, project_id: str, world: dict, now: str) -> dict:
+    """Fetch-or-create the world library slot (scaffold shape). Created empty
+    (no file) so MT honesty rows always have a library_ref to point at; RW
+    rows only use it when a real file exists (caller checks)."""
+    ref = world.get("id") or ""
+    async with proj_db.execute(
+        "SELECT id, asset_ref, title, file_path, status FROM library "
+        "WHERE project_id=? AND asset_ref=?", (project_id, ref)) as cur:
+        row = await cur.fetchone()
+    if row:
+        return dict(row)
+    lib_id = await _next_library_id(proj_db)
+    title = (world.get("text") or ref)[:200]
+    await proj_db.execute(
+        "INSERT INTO library (id, project_id, kind, asset_ref, title, file_path, source, "
+        "status, notes, created_at, updated_at) VALUES (?,?, 'world', ?, ?, '', 'manual', "
+        "'empty', '', ?, ?)",
+        (lib_id, project_id, ref, title, now, now))
+    return {"id": lib_id, "asset_ref": ref, "title": title,
+            "file_path": "", "status": "empty"}
+
+
+async def _ensure_beat_world_assets(proj_db, project_id: str, folder: str,
+                                    beat_id: str, now: str):
+    """BE-driven World Desk injection for one beat. For every beat_elements
+    RW/MT cite: MT always gets a photo honesty row (library_ref, never SVG);
+    RW (real_person/brand_logo/trademark/meme) gets a photo row ONLY when its
+    library slot holds a real Download Desk file. Idempotent (insert-if-missing
+    on library_ref) — re-runs never duplicate, never delete, never touch LLM
+    rows or generations. Returns (added, mt_added, rw_added)."""
+    base = Path(DATA_DIR) / "projects" / folder
+    worlds, world_by_id, lib_by_ref = await _load_world_index(proj_db, project_id)
+    if not worlds:
+        return 0, 0, 0
+    async with proj_db.execute(
+        "SELECT DISTINCT asset_ref FROM beat_elements WHERE beat_id=?", (beat_id,)) as cur:
+        be_refs = [r["asset_ref"] for r in await cur.fetchall() if r["asset_ref"]]
+    # Only BE cites that are known worlds (RW/MT). Distinct per beat.
+    be_worlds = [r for r in dict.fromkeys(be_refs) if r in world_by_id]
+    if not be_worlds:
+        return 0, 0, 0
+    async with proj_db.execute(
+        "SELECT library_ref FROM scene_assets WHERE beat_id=? AND library_ref IS NOT NULL",
+        (beat_id,)) as cur:
+        existing = {r["library_ref"] for r in await cur.fetchall() if r["library_ref"]}
+    added, mt_added, rw_added = 0, 0, 0
+    for ref in be_worlds:
+        world = world_by_id[ref]
+        lib = lib_by_ref.get(ref)
+        if _is_map_world(world):
+            if lib is None:
+                lib = await _ensure_library_slot(proj_db, project_id, world, now)
+                lib_by_ref[ref] = lib
+            if lib["id"] in existing:
+                continue
+            name = (world.get("text") or ref)[:200]
+            sq = ((world.get("search_query") or "").strip() or (world.get("text") or ref))[:200]
+            reasoning = (
+                f"World Desk match: beat {beat_id} cites {ref} ({name[:60]}); "
+                "map trigger resolves to honesty box, never a faked map.")
+            await proj_db.execute(
+                "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
+                "library_ref, needs_generate, generation_id, created_at, updated_at) "
+                "VALUES (?,?, 'photo', ?,?,?,0,NULL,?,?)",
+                (beat_id, name, sq, reasoning, lib["id"], now, now))
+            existing.add(lib["id"])
+            added += 1
+            mt_added += 1
+        else:
+            # RW/logo/meme/photo kinds: photo/insert-layer ONLY with a real file.
+            if not _world_file_ready(base, lib):
+                continue
+            if lib["id"] in existing:
+                continue
+            name = (world.get("text") or ref)[:200]
+            sq = ((world.get("search_query") or "").strip() or (world.get("text") or ref))[:200]
+            reasoning = (
+                f"World Desk match: beat {beat_id} cites {ref} ({name[:60]}); "
+                "Download Desk file renders as photo insert, like any asset.")
+            await proj_db.execute(
+                "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
+                "library_ref, needs_generate, generation_id, created_at, updated_at) "
+                "VALUES (?,?, 'photo', ?,?,?,0,NULL,?,?)",
+                (beat_id, name, sq, reasoning, lib["id"], now, now))
+            existing.add(lib["id"])
+            added += 1
+            rw_added += 1
+    return added, mt_added, rw_added
+
+
 @router.post("/projects/{project_id}/scenes/assets/plan")
 async def plan_scene_assets(project_id: str):
     try:
@@ -337,7 +523,12 @@ async def _plan_assets_inner(project_id: str):
         + [{"id": f"vault:{e['id']}", "tags": e["title"]} for e in vault_entries]
     )
 
+    # D9-T03 World Desk index (MT guard + BE injection below). Loaded once so
+    # the per-beat loop stays a pure match/store (no N+1 world scans).
+    world_list, _world_by_id, _lib_by_world = await _load_world_index(proj_db, project_id)
+
     planned_scenes, total_needs, matched, to_generate = 0, 0, 0, 0
+    world_added_total, mt_added_total, rw_added_total = 0, 0, 0
     failed: list[dict] = []
     now = _now()
     for sc in scenes:
@@ -394,6 +585,53 @@ async def _plan_assets_inner(project_id: str):
                         lib_entries.append({"id": lib_id, "kind": entry.get("kind") or "world",
                                             "title": entry.get("title") or need["name"]})
                     else:
+                        # D9-T03 MT guard (vault miss path): an LLM need matching
+                        # an MT world becomes an honesty row, never an SVG miss.
+                        mt_world = _need_matches_mt(need, world_list)
+                        if mt_world is not None:
+                            lib_slot = _lib_by_world.get(mt_world["id"])
+                            if lib_slot is None:
+                                lib_slot = await _ensure_library_slot(
+                                    proj_db, project_id, mt_world, now)
+                                _lib_by_world[mt_world["id"]] = lib_slot
+                            await proj_db.execute(
+                                "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
+                                "library_ref, needs_generate, generation_id, created_at, updated_at) "
+                                "VALUES (?,?, 'photo', ?,?,?,0,NULL,?,?)",
+                                (beat_id, need["name"], need["search_query"],
+                                 f"LLM need '{need['name'][:60]}' matched {mt_world['id']} "
+                                 "map trigger — honesty box, never a faked map.",
+                                 lib_slot["id"], now, now))
+                            matched += 1
+                        else:
+                            gen_id = await _insert_svg_miss(
+                                proj_db, project_id, beat_id, sc, need, idx, now)
+                            await proj_db.execute(
+                                "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
+                                "library_ref, needs_generate, generation_id, created_at, updated_at) "
+                                "VALUES (?,?,?,?,?,NULL,1,?,?,?)",
+                                (beat_id, need["name"], need["kind"], need["search_query"],
+                                 need["reasoning"], gen_id, now, now))
+                            to_generate += 1
+                else:
+                    # D9-T03 MT guard (no-match path): same honesty row, never SVG.
+                    mt_world = _need_matches_mt(need, world_list)
+                    if mt_world is not None:
+                        lib_slot = _lib_by_world.get(mt_world["id"])
+                        if lib_slot is None:
+                            lib_slot = await _ensure_library_slot(
+                                proj_db, project_id, mt_world, now)
+                            _lib_by_world[mt_world["id"]] = lib_slot
+                        await proj_db.execute(
+                            "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
+                            "library_ref, needs_generate, generation_id, created_at, updated_at) "
+                            "VALUES (?,?, 'photo', ?,?,?,0,NULL,?,?)",
+                            (beat_id, need["name"], need["search_query"],
+                             f"LLM need '{need['name'][:60]}' matched {mt_world['id']} "
+                             "map trigger — honesty box, never a faked map.",
+                             lib_slot["id"], now, now))
+                        matched += 1
+                    else:
                         gen_id = await _insert_svg_miss(
                             proj_db, project_id, beat_id, sc, need, idx, now)
                         await proj_db.execute(
@@ -403,17 +641,24 @@ async def _plan_assets_inner(project_id: str):
                             (beat_id, need["name"], need["kind"], need["search_query"],
                              need["reasoning"], gen_id, now, now))
                         to_generate += 1
-                else:
-                    gen_id = await _insert_svg_miss(
-                        proj_db, project_id, beat_id, sc, need, idx, now)
-                    await proj_db.execute(
-                        "INSERT INTO scene_assets (beat_id, name, kind, search_query, reasoning, "
-                        "library_ref, needs_generate, generation_id, created_at, updated_at) "
-                        "VALUES (?,?,?,?,?,NULL,1,?,?,?)",
-                        (beat_id, need["name"], need["kind"], need["search_query"],
-                         need["reasoning"], gen_id, now, now))
-                    to_generate += 1
             total_needs += len(needs)
+            # D9-T03 BE-driven World Desk injection (RW with files + MT always).
+            # Runs after the LLM needs so BE cites are covered even when the LLM
+            # never proposes them; dedupes against just-inserted LLM rows via
+            # library_ref, counts as matched (library_ref) to keep the
+            # needs = matched + to_generate invariant.
+            try:
+                w_added, w_mt, w_rw = await _ensure_beat_world_assets(
+                    proj_db, project_id, folder, beat_id, now)
+                total_needs += w_added
+                matched += w_added
+                world_added_total += w_added
+                mt_added_total += w_mt
+                rw_added_total += w_rw
+            except Exception as e:
+                failed.append({"beat_id": beat_id,
+                               "error": f"world-sync crashed: {type(e).__name__}: {str(e)[:150]}"})
+                continue
             planned_scenes += 1
         except Exception as e:
             failed.append({"beat_id": beat_id,
@@ -424,7 +669,55 @@ async def _plan_assets_inner(project_id: str):
     await proj_db.close()
     return {"planned_scenes": planned_scenes, "total_needs": total_needs,
             "matched": matched, "to_generate": to_generate,
+            "world_added": world_added_total, "mt_added": mt_added_total,
+            "rw_added": rw_added_total,
             "failed": failed, "total_scenes": len(scenes)}
+
+
+@router.post("/projects/{project_id}/scenes/assets/world-sync")
+async def world_sync_scene_assets(project_id: str):
+    """D9-T03 World Desk backfill (no LLM, additive-only).
+
+    Ensures every beat_elements RW/MT cite has a scene_assets photo row:
+    MT always (honesty box), RW only with a real Download Desk file.
+    Idempotent insert-if-missing — never deletes, never touches generations,
+    safe to run on projects with 107 final SVGs (unlike full re-plan).
+    """
+    try:
+        folder, _ch_id = await _get_proj_info(project_id)
+        proj_db = await get_project_db(folder)
+        try:
+            async with proj_db.execute(
+                "SELECT b.id AS beat_id FROM scenes s JOIN beats b ON b.id=s.beat_id "
+                "WHERE b.project_id=? ORDER BY b.sort_order", (project_id,)) as cur:
+                beat_ids = [r["beat_id"] for r in await cur.fetchall()]
+            if not beat_ids:
+                raise HTTPException(400, "Plan scenes first (no scene rows to sync worlds for).")
+            now = _now()
+            synced, added, mt_added, rw_added = 0, 0, 0, 0
+            failed: list[dict] = []
+            for beat_id in beat_ids:
+                try:
+                    w_added, w_mt, w_rw = await _ensure_beat_world_assets(
+                        proj_db, project_id, folder, beat_id, now)
+                    synced += 1
+                    added += w_added
+                    mt_added += w_mt
+                    rw_added += w_rw
+                except Exception as e:
+                    failed.append({"beat_id": beat_id,
+                                   "error": f"world-sync crashed: {type(e).__name__}: {str(e)[:150]}"})
+                    continue
+            await proj_db.commit()
+        finally:
+            await proj_db.close()
+        return {"synced_beats": synced, "world_added": added,
+                "mt_added": mt_added, "rw_added": rw_added,
+                "failed": failed, "total_scenes": len(beat_ids)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"World sync crashed: {type(e).__name__}: {e}")
 
 
 async def _materialise_vault_hit(proj_db, project_id: str, folder: str,
@@ -947,10 +1240,16 @@ async def scene_preview(project_id: str, beat_id: str):
                 "WHERE beat_id=? ORDER BY id",
                 (beat_id,)) as cur:
             overlay_rows = [dict(r) for r in await cur.fetchall()]
+        # D9-T03: world index for MT honesty (map_trigger → "map coming" box).
+        async with proj_db.execute(
+                "SELECT id, type, text FROM world_records WHERE project_id=?",
+                (project_id,)) as cur:
+            world_rows = [dict(r) for r in await cur.fetchall()]
     finally:
         await proj_db.close()
 
     lib_by_id = {r["id"]: r for r in lib_rows}
+    world_by_id = {r["id"]: r for r in world_rows if r.get("id")}
     els_by_asset: dict[str, dict] = {}
     for el in elements:
         els_by_asset.setdefault(el["asset_ref"], el)
@@ -985,6 +1284,11 @@ async def scene_preview(project_id: str, beat_id: str):
         place_title, place_reason = "(none)", "no place ref on scene"
 
     # --- resolve + place each need ---
+    # D9-T03: world photo assets paste like any asset (file paste when the
+    # Download Desk file exists); MT rows ALWAYS resolve to the honesty box
+    # (never a silent blank, never a faked map — even if a file ever lands in
+    # an MT slot). World photo rows default to insert when no BE hint names a
+    # layer (locked layer rule); BE hints are respected when present.
     items: list[dict] = []
     for idx, nd in enumerate(needs):
         kind = (nd.get("kind") or "prop").lower()
@@ -992,6 +1296,11 @@ async def scene_preview(project_id: str, beat_id: str):
         lib = lib_by_id.get(nd.get("library_ref") or "") if nd.get("library_ref") else None
         if lib:
             hint = els_by_asset.get(lib.get("asset_ref") or "")
+        world = world_by_id.get((lib.get("asset_ref") or "") if lib else "") if lib else None
+        is_map = _is_map_world(world) or (
+            lib is not None and (lib.get("asset_ref") or "").startswith("MT"))
+        is_world = world is not None or (
+            lib is not None and (lib.get("asset_ref") or "").startswith(("RW", "MT")))
         framing_eff = (hint.get("framing") if hint else "") or (
             "wide" if kind in ("place", "photo") else "medium")
         dx, dy, ds = _default_box(idx, max(len(needs), 1), framing_eff, kind)
@@ -1002,10 +1311,20 @@ async def scene_preview(project_id: str, beat_id: str):
         x = min(max(x, 0.0), max(1.0 - s, 0.0))
         y = min(max(y, 0.0), max(1.0 - s, 0.0))
         layer = (hint.get("layer") if hint else "") or (
-            "background" if kind in ("place", "photo") else "midground")
+            "background" if kind in ("place", "photo") and not is_world else "midground")
+        if is_world and not hint:
+            # No BE placement to respect — world photos read as inserts.
+            layer = "insert"
 
         rel, reason, path, fhash = "", "", None, ""
-        if nd.get("library_ref"):
+        if is_map:
+            # MT honesty: live world text in the reason so a text change busts
+            # the scene-hash cache (stale map box is a bug, same rule as D9-T02
+            # overlay text). Path stays None so missing-count stays honest.
+            world_id = (lib.get("asset_ref") if lib else "") or "MT"
+            world_text = (world.get("text") if world else "") or (nd.get("name") or "")
+            reason = f"map coming: {world_id} {world_text}"[:90]
+        elif nd.get("library_ref"):
             if lib is None:
                 reason = f"library {nd['library_ref']} missing"
             elif not (lib["file_path"] or "").strip():
@@ -1042,12 +1361,16 @@ async def scene_preview(project_id: str, beat_id: str):
             reason = "unresolved (neither branch)"
         items.append({"need": nd, "kind": kind, "framing": framing_eff,
                       "x": x, "y": y, "scale": s, "layer": layer,
-                      "path": path, "rel": rel, "reason": reason, "fhash": fhash})
-
+                      "path": path, "rel": rel, "reason": reason, "fhash": fhash,
+                      "is_map": bool(is_map),
+                      "world_id": ((lib.get("asset_ref") or "") if lib else "")})
     items.sort(key=lambda it: (_LAYER_RANK.get(it["layer"], 1), it["need"]["id"]))
 
     # --- scene-hash cache key (D9-T02: overlay CONTENT is part of the key —
     # a one-letter text change MUST bust the cache; stale art is a bug) ---
+    # D9-T03: MT honesty text + world linkage are part of the key — a world
+    # text change or RW-file swap MUST bust the cache (fhash already covers
+    # file bytes; reason covers live map text; is_map/world_id cover linkage).
     canon = {
         "beat_id": beat_id,
         "place_asset_ref": place_ref,
@@ -1064,7 +1387,8 @@ async def scene_preview(project_id: str, beat_id: str):
              "kind": it["kind"], "library_ref": it["need"].get("library_ref"),
              "generation_id": it["need"].get("generation_id"),
              "rel": it["rel"], "fhash": it["fhash"], "reason": it["reason"],
-             "x": it["x"], "y": it["y"], "scale": it["scale"]}
+             "x": it["x"], "y": it["y"], "scale": it["scale"],
+             "is_map": it.get("is_map", False), "world_id": it.get("world_id", "")}
             for it in items
         ],
         "place": {"rel": place_rel, "fhash": _file_hash(place_path) if place_path else "",
@@ -1082,6 +1406,7 @@ async def scene_preview(project_id: str, beat_id: str):
     prev_dir.mkdir(parents=True, exist_ok=True)
     dest = prev_dir / f"{beat_id}_{short}.png"
     missing = sum(1 for it in items if it["path"] is None) + (1 if place_path is None else 0)
+    map_count = sum(1 for it in items if it.get("is_map"))
 
     if dest.exists() and dest.stat().st_size > 0:
         return FileResponse(
@@ -1089,7 +1414,9 @@ async def scene_preview(project_id: str, beat_id: str):
             headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "true",
                      "X-Missing-Count": str(missing),
                      "X-Assets-Total": str(len(items) + 1),
-                     "X-Overlays-Total": str(len(overlay_rows))})
+                     "X-Overlays-Total": str(len(overlay_rows)),
+                     "X-Map-Count": str(map_count),
+                     "X-World-Total": str(sum(1 for it in items if it.get("world_id")))} )
 
     # --- render ---
     # Fail fast LOUD when no TTF is available (never silent bitmap): probe
@@ -1127,6 +1454,14 @@ async def scene_preview(project_id: str, beat_id: str):
         by = min(max(by, 0), _PRE_H - 1)
         bw = min(bw, _PRE_W - bx)
         bh = min(bh, _PRE_H - by)
+        # D9-T03 MT honesty: map rows NEVER paste a file and NEVER go blank —
+        # always the labelled "map coming" box (even if a file ever lands).
+        if it.get("is_map"):
+            world_id = it.get("world_id") or "MT"
+            world_text = (world_by_id.get(world_id, {}).get("text")
+                          or it["need"].get("name") or "")
+            _draw_map_coming_box(canvas, (bx, by, bw, bh), world_id, world_text)
+            continue
         if it["path"] is not None:
             try:
                 with _Image.open(it["path"]) as aim:
@@ -1169,4 +1504,6 @@ async def scene_preview(project_id: str, beat_id: str):
         headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "false",
                  "X-Missing-Count": str(missing),
                  "X-Assets-Total": str(len(items) + 1),
-                 "X-Overlays-Total": str(len(overlay_rows))})
+                 "X-Overlays-Total": str(len(overlay_rows)),
+                 "X-Map-Count": str(map_count),
+                 "X-World-Total": str(sum(1 for it in items if it.get("world_id")))})
