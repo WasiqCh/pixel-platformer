@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -598,7 +598,7 @@ async def list_svg_versions(project_id: str, gen_id: int):
     base = get_project_dir(ch_id, folder.split("_")[1])
     svg_dir = base / "06_sheets" / "svg"
     proj_db = await get_project_db(folder)
-    async with proj_db.execute("SELECT gen_label, asset_ref, svg_path, status FROM generations WHERE id=? AND project_id=?",
+    async with proj_db.execute("SELECT gen_label, asset_ref, svg_path, status, file_path, source, license, source_url FROM generations WHERE id=? AND project_id=?",
                                (gen_id, project_id)) as cur:
         row = await cur.fetchone()
     await proj_db.close()
@@ -607,8 +607,18 @@ async def list_svg_versions(project_id: str, gen_id: int):
     row = dict(row)
     clean = _sanitize_svg_base(row["gen_label"] or row["asset_ref"] or f"gen{gen_id}")
     vers = _list_svg_versions(svg_dir, clean)
+    # SCENES-MP4 S-T04: version history covers BOTH lanes (AI/paste/upload SVG
+    # versions + fetch/raster-upload user files). Replaced rows keep every
+    # file on disk — this endpoint lists them (additive keys; existing
+    # callers keep reading versions/current_svg_path/status untouched).
+    fetch_dir = base / _FETCH_SUBDIR
     return {"gen_id": gen_id, "current_svg_path": row["svg_path"], "status": row["status"],
-            "versions": [f"06_sheets/svg/{clean}_v{v}.svg" for v in vers]}
+            "versions": [f"06_sheets/svg/{clean}_v{v}.svg" for v in vers],
+            "fetch_versions": _list_fetch_versions(fetch_dir, clean),
+            "current_file_path": row.get("file_path") or "",
+            "source": row.get("source") or "",
+            "license": row.get("license") or "",
+            "source_url": row.get("source_url") or ""}
 
 
 # --- SCENES-MP4 D2-T02: paste-code (external SVG validated like AI output) ---
@@ -677,6 +687,381 @@ async def paste_svg_one(project_id: str, gen_id: int, data: SvgPasteRequest):
     return await _paste_svg_row(project_id, folder, ch_id, gen_id, data.code)
 
 
+# --- SCENES-MP4 S-T04: per-asset web-fetch + image upload (backend) ---
+# Every asset already has regen/retry (P2-T04) + paste-code (D2-T02). This
+# block adds the two NEW lanes, both per-generation (per asset):
+#   fetch-through-web: GET .../fetch-search?q= (Wikimedia Commons search with
+#     the download_desk license filter — ALLOWED/BLOCKED, same shape as the
+#     World Desk autosearch) → user picks → POST .../fetch {file_url,
+#     source_url, license, author} downloads the file, stores it versioned
+#     under 06_sheets/fetch/<base>_vN.<ext>, points file_path at it (so the
+#     scene preview + image endpoint show the real file immediately), and
+#     records license + source_url on the row (source='fetched').
+#   upload image: POST .../upload (multipart) accepts .svg/.png/.jpg/.jpeg
+#     (an asset is not necessarily vector). SVG uploads validate through the
+#     real validate_svg_text path and version like paste; raster uploads PIL-
+#     validate and version under 06_sheets/fetch/ like fetch. Both move the
+#     newest pointer only (history intact — old files never deleted, versions
+#     endpoint lists both lanes). Manual always wins: source flips to
+#     'fetched'/'uploaded', and approve keeps a fetch/ user file instead of
+#     re-rastering stale AI SVG over it (see _approve_svg_row guard).
+# No AI calls here (no LLM jobs, no recipes, no schemas needed — §4 rule 4
+# applies to AI outputs; these lanes move user/chosen files only).
+
+_FETCH_SUBDIR = "06_sheets/fetch"
+
+_FETCH_CT_EXT = (
+    ("image/png", ".png"),
+    ("image/jpeg", ".jpg"),
+    ("image/webp", ".webp"),
+)
+
+_UPLOAD_SVG_EXTS = frozenset({".svg"})
+_UPLOAD_RASTER_EXTS = frozenset({".png", ".jpg", ".jpeg"})
+_UPLOAD_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _next_fetch_version(fetch_dir, base: str) -> int:
+    """Next user-file version: max over <base>_vN.<any-ext> + 1 (never reuse)."""
+    pat = re.compile(rf"^{re.escape(base)}_v(\d+)\.[A-Za-z0-9]+$")
+    best = 0
+    try:
+        for p in fetch_dir.iterdir():
+            m = pat.match(p.name)
+            if m:
+                try:
+                    best = max(best, int(m.group(1)))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return best + 1
+
+
+def _list_fetch_versions(fetch_dir, base: str) -> list[str]:
+    """Versioned user files (fetch + raster uploads), oldest first."""
+    pat = re.compile(rf"^{re.escape(base)}_v(\d+)\.[A-Za-z0-9]+$")
+    hits: list[tuple[int, str]] = []
+    try:
+        for p in fetch_dir.iterdir():
+            m = pat.match(p.name)
+            if m:
+                try:
+                    hits.append((int(m.group(1)), p.name))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    hits.sort()
+    return [f"{_FETCH_SUBDIR}/{name}" for _, name in hits]
+
+
+def _fetch_ext_for_content_type(ct: str, url: str) -> str | None:
+    """Map a download's content-type to a stored extension (None = reject)."""
+    c = (ct or "").split(";")[0].strip().lower()
+    for prefix, ext in _FETCH_CT_EXT:
+        if c == prefix or c.startswith(prefix + "+"):
+            return ext
+    # Fallback: URL suffix when the server sends a generic content-type.
+    low = (url or "").split("?")[0].lower()
+    if low.endswith(".png"):
+        return ".png"
+    if low.endswith(".jpg") or low.endswith(".jpeg"):
+        return ".jpg"
+    if low.endswith(".webp"):
+        return ".webp"
+    return None
+
+
+def _validate_raster_bytes(raw: bytes) -> tuple[int, int, str]:
+    """PIL-validate uploaded/fetched raster bytes. Returns (w, h, format)."""
+    import io as _io
+
+    from PIL import Image as _Image
+
+    try:
+        with _Image.open(_io.BytesIO(raw)) as im:
+            im.load()
+            return int(im.size[0]), int(im.size[1]), (im.format or "?")
+    except Exception as e:
+        raise ValueError(f"file is not a valid PNG/JPG image: {type(e).__name__}")
+
+
+class SvgFetchRequest(BaseModel):
+    file_url: str
+    source_url: str = ""
+    license: str = ""
+    author: str = ""
+
+
+@router.get("/projects/{project_id}/generate/svg/{gen_id}/fetch-search")
+async def fetch_search_svg(project_id: str, gen_id: int, q: str | None = None):
+    """Wikimedia Commons search for one asset (pick step of fetch-through-web).
+
+    Default query is the linked scene need's search_query (the same text the
+    asset planner wrote), else the generation title. Results carry the file
+    URL + license + author the attach step records. Read-only: no writes.
+    """
+    import asyncio as _asyncio
+
+    folder, _ch_id = await _proj(project_id)
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+                "SELECT * FROM generations WHERE id=? AND project_id=?",
+                (gen_id, project_id)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Generation not found")
+        row = dict(row)
+        if row["kind"] != "svg":
+            raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+        query = (q or "").strip()
+        if not query:
+            try:
+                async with proj_db.execute(
+                        "SELECT search_query, name FROM scene_assets WHERE generation_id=?",
+                        (gen_id,)) as cur:
+                    need = await cur.fetchone()
+                if need:
+                    need = dict(need)
+                    query = ((need.get("search_query") or need.get("name")) or "").strip()
+            except Exception:
+                pass
+            if not query:
+                query = (row["title"] or "").strip()
+        if not query:
+            raise HTTPException(400, "q must be non-empty (no search text for this asset).")
+    finally:
+        await proj_db.close()
+    # Same license discipline as the World Desk autosearch (download_desk):
+    # only freely reusable files, NC/ND blocked — one rule, two callers.
+    from backend.api.download_desk import _clean_html, _license_ok
+
+    url = ("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search"
+           f"&gsrsearch=filetype:bitmap%20{query.replace(' ', '%20')}&gsrlimit=10&gsrnamespace=6"
+           "&prop=imageinfo&iiprop=url%7Cextmetadata%7Csize&iiurlwidth=320")
+    headers = {"User-Agent": "PixelPlatformer/1.0 (animation pipeline; localhost)"}
+    r = None
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=30) as cl:
+            r = await cl.get(url, headers=headers)
+        if r.status_code == 200:
+            break
+        if r.status_code not in (403, 429, 500, 502, 503, 504):
+            break
+        if attempt < 2:
+            await _asyncio.sleep(1.0 * (attempt + 1))
+    if r is None or r.status_code != 200:
+        raise HTTPException(
+            502, f"Wikimedia search failed HTTP {getattr(r, 'status_code', 'no response')} "
+                 f"for query '{query[:80]}' (transient 403/429s are their rate-limit — retry shortly).")
+    try:
+        pages = (r.json().get("query") or {}).get("pages") or {}
+    except Exception:
+        raise HTTPException(502, "Wikimedia returned an unreadable response (retry shortly).")
+    out = []
+    for p in pages.values():
+        ii = (p.get("imageinfo") or [{}])[0]
+        md = ii.get("extmetadata") or {}
+        lic = _clean_html((md.get("LicenseShortName") or {}).get("value"))
+        if not _license_ok(lic):
+            continue
+        out.append({
+            "title": p.get("title", ""),
+            "thumb": ii.get("thumburl") or ii.get("url"),
+            "file_url": ii.get("url"),
+            "source_url": ii.get("descriptionurl"),
+            "license": lic,
+            "author": _clean_html((md.get("Artist") or {}).get("value"))[:120],
+        })
+    out.sort(key=lambda x: x["title"])
+    return {"gen_id": gen_id, "query": query, "results": out[:8]}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/fetch")
+async def fetch_attach_svg(project_id: str, gen_id: int, data: SvgFetchRequest):
+    """Attach a web file to one asset (attach step of fetch-through-web).
+
+    Downloads file_url, validates it is a real raster image, stores it
+    versioned under 06_sheets/fetch/ (never overwrite), points file_path at
+    it (preview + image endpoint show the real file immediately), records
+    license + source_url, flips source='fetched' (manual always wins).
+    Nothing is deleted — replaced rows keep version history on disk.
+    """
+    file_url = (data.file_url or "").strip()
+    if not (file_url.startswith("http://") or file_url.startswith("https://")):
+        raise HTTPException(400, "file_url must be an http(s) URL (pick one from fetch-search).")
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?",
+                               (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as cl:
+        r = await cl.get(file_url)
+    if r.status_code != 200 or not r.content:
+        await proj_db.close()
+        raise HTTPException(502, f"Download failed HTTP {r.status_code} (nothing written).")
+    raw = bytes(r.content)
+    if len(raw) > _UPLOAD_MAX_BYTES:
+        await proj_db.close()
+        raise HTTPException(400, f"File too large ({len(raw)}B > 15MB — nothing written).")
+    ext = _fetch_ext_for_content_type(r.headers.get("content-type", ""), file_url)
+    if ext is None:
+        await proj_db.close()
+        raise HTTPException(
+            400, f"Unsupported file type ({r.headers.get('content-type', '?') or '?'} — "
+                 "fetch accepts PNG/JPG/WEBP bitmaps; SVG arrives via upload/paste).")
+    try:
+        _w, _h, _fmt = _validate_raster_bytes(raw)
+    except ValueError as e:
+        await proj_db.close()
+        raise HTTPException(400, f"{e} (nothing written).")
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    fetch_dir = base / _FETCH_SUBDIR
+    fetch_dir.mkdir(parents=True, exist_ok=True)
+    previous = row.get("file_path") or ""
+    try:
+        ver = _next_fetch_version(fetch_dir, clean)
+        rel = f"{_FETCH_SUBDIR}/{clean}_v{ver}{ext}"
+        (fetch_dir / f"{clean}_v{ver}{ext}").write_bytes(raw)
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+    await proj_db.execute(
+        "UPDATE generations SET file_path=?, status='generated', source='fetched', "
+        "license=?, source_url=?, error='', updated_at=? WHERE id=?",
+        (rel, (data.license or "")[:200], (data.source_url or "")[:500], _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "file_path": rel,
+            "version": ver, "source": "fetched",
+            "license": (data.license or "")[:200],
+            "source_url": (data.source_url or "")[:500],
+            "previous_file_path": previous or None}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/upload")
+async def upload_svg_asset(project_id: str, gen_id: int, file: UploadFile = File(...)):
+    """Upload an image for one asset (user file wins, history kept).
+
+    Accepts .svg (validated through the real validate_svg_text path, versioned
+    like paste → svg_path pointer) and .png/.jpg/.jpeg (PIL-validated,
+    versioned under 06_sheets/fetch/ → file_path pointer so the preview shows
+    it immediately). New version each upload, never overwrite; source flips to
+    'uploaded'. Rejects anything else with a 400 and writes nothing.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Upload is empty (nothing written).")
+    if len(raw) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(413, f"File too large ({len(raw)}B > 15MB — nothing written).")
+    fname = (file.filename or "").lower()
+    ext = None
+    for cand in (".svg", ".png", ".jpg", ".jpeg"):
+        if fname.endswith(cand):
+            ext = cand
+            break
+    if ext is None:
+        # Fallback: sniff the bytes (SVG text vs raster magic) when the
+        # filename lies or is missing — same accept set either way.
+        head = raw[:512].lstrip().lower()
+        if head.startswith(b"<svg") or head.startswith(b"<?xml"):
+            ext = ".svg"
+        else:
+            try:
+                _validate_raster_bytes(raw)
+                ext = ".png"
+            except ValueError:
+                ext = None
+    if ext is None:
+        raise HTTPException(400, "Upload accepts .svg/.png/.jpg/.jpeg only (nothing written).")
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?",
+                               (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    if ext in _UPLOAD_SVG_EXTS:
+        try:
+            clean_svg = validate_svg_text(raw.decode("utf-8", errors="strict"))
+        except (ValueError, UnicodeDecodeError) as e:
+            await proj_db.close()
+            raise HTTPException(400, f"{str(e)[:280]} (nothing written).")
+        svg_dir = base / "06_sheets" / "svg"
+        svg_dir.mkdir(parents=True, exist_ok=True)
+        previous = row.get("svg_path") or ""
+        previous_file = row.get("file_path") or ""
+        # Latest manual action wins: the new SVG supersedes an older
+        # fetched/uploaded raster, so drop the fetch/ pointer (history file
+        # stays on disk) — otherwise the approve guard below would keep
+        # showing the stale user raster forever. AI raster caches
+        # (06_sheets/raster/...) are kept: approve refreshes them from the
+        # new SVG (same semantics as paste).
+        drop_user_file = previous_file.startswith(_FETCH_SUBDIR + "/")
+        try:
+            ver = _next_svg_version(svg_dir, clean)
+            rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+            (svg_dir / f"{clean}_v{ver}.svg").write_text(clean_svg, encoding="utf-8")
+        except Exception as e:
+            await proj_db.close()
+            raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+        await proj_db.execute(
+            "UPDATE generations SET svg_path=?, file_path=?, status='generated', source='uploaded', "
+            "error='', updated_at=? WHERE id=?",
+            (rel, ("" if drop_user_file else previous_file), _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+                "version": ver, "source": "uploaded",
+                "file_path": ("" if drop_user_file else previous_file),
+                "previous_svg_path": previous or None,
+                "previous_file_path": previous_file or None}
+    try:
+        _validate_raster_bytes(raw)
+    except ValueError as e:
+        await proj_db.close()
+        raise HTTPException(400, f"{e} (nothing written).")
+    store_ext = ".jpg" if ext == ".jpeg" else ext
+    fetch_dir = base / _FETCH_SUBDIR
+    fetch_dir.mkdir(parents=True, exist_ok=True)
+    previous = row.get("file_path") or ""
+    try:
+        ver = _next_fetch_version(fetch_dir, clean)
+        rel = f"{_FETCH_SUBDIR}/{clean}_v{ver}{store_ext}"
+        (fetch_dir / f"{clean}_v{ver}{store_ext}").write_bytes(raw)
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+    await proj_db.execute(
+        "UPDATE generations SET file_path=?, status='generated', source='uploaded', "
+        "error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "file_path": rel,
+            "version": ver, "source": "uploaded",
+            "previous_file_path": previous or None}
+
+
 # --- SCENES-MP4 P2-T06: approve -> raster PNG (hash-keyed cache) + finalize ---
 # Status ladder: generated -> approved -> final. Approve rasterizes the current
 # svg_path into 06_sheets/raster/<base>_<hash12>.png via Inkscape headless;
@@ -702,6 +1087,24 @@ async def _approve_svg_row(project_id, folder, ch_id, gen_id):
     if row["kind"] != "svg":
         await proj_db.close()
         raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    # SCENES-MP4 S-T04: manual always wins — a fetched/uploaded raster under
+    # 06_sheets/fetch/ IS the render (no SVG to rasterize). Approving keeps
+    # the user file exactly as-is (status flip only, never re-raster stale AI
+    # bytes over it). Uploaded SVGs (source='uploaded' + svg_path) fall
+    # through to the normal raster path below.
+    _user_fp = (row.get("file_path") or "").strip()
+    if row.get("source") in ("fetched", "uploaded") and _user_fp.startswith(_FETCH_SUBDIR + "/"):
+        _cand0 = base / _user_fp
+        if _cand0.exists() and _cand0.stat().st_size > 0:
+            target = "final" if row["status"] == "final" else "approved"
+            await proj_db.execute(
+                "UPDATE generations SET status=?, error='', updated_at=? WHERE id=?",
+                (target, _now(), gen_id))
+            await proj_db.commit()
+            await proj_db.close()
+            return {"gen_id": gen_id, "status": target, "svg_path": row["svg_path"],
+                    "file_path": _user_fp, "cached": True, "user_file": True,
+                    "raster_path": _user_fp}
     if not row["svg_path"]:
         await proj_db.close()
         raise HTTPException(400, "No SVG version yet — generate once before approving.")
@@ -926,4 +1329,9 @@ async def gen_image(project_id: str, gen_id: int):
     p = get_project_dir(ch_id, folder.split("_")[1]) / row["file_path"]
     if not p.exists():
         raise HTTPException(404, "File missing")
-    return FileResponse(p, media_type="image/png")
+    # SCENES-MP4 S-T04: user files are PNG/JPG/WEBP beside SVG — serve the
+    # real media type (was hardcoded image/png for the raster-only era).
+    _media = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+              "webp": "image/webp", "svg": "image/svg+xml"}.get(
+        p.suffix.lower().lstrip("."), "image/png")
+    return FileResponse(p, media_type=_media)

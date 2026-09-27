@@ -43,6 +43,21 @@ export default function S15_Assets({ currentProject }) {
   const [pgMsg, setPgMsg] = useState('');
   const [pgUrl, setPgUrl] = useState(null);
   const [pgHash, setPgHash] = useState('');
+  // S-T04 — per-asset web-fetch + image upload. Fetch: search box (defaults
+  // to the need's search_query) → GET .../fetch-search?q= (Wikimedia,
+  // license-filtered) → per-result Attach → POST .../fetch {file_url,
+  // source_url, license, author} (versioned file, license recorded,
+  // source='fetched'). Upload: file input (.svg/.png/.jpg/.jpeg) → POST
+  // .../upload multipart (validated, versioned, source='uploaded'). Both
+  // patch the gen row in place (badge flips, thumbnail refreshes via the
+  // file_path key); history stays on disk (versions endpoint lists both).
+  const [fetchOpen, setFetchOpen] = useState(null);
+  const [fetchQ, setFetchQ] = useState('');
+  const [fetchBusy, setFetchBusy] = useState(false);
+  const [fetchFound, setFetchFound] = useState({});
+  const [fetchMsg, setFetchMsg] = useState({});
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState({});
 
   // Read-only loads (existing list endpoints only). Effect loader carries
   // no synchronous setState (async .then sets only, S09 pattern) so the
@@ -99,12 +114,15 @@ export default function S15_Assets({ currentProject }) {
   // Provenance badge logic (D2-T01 must already handle PASTED ahead of D2-T02):
   // LIBRARY = scene need carries library_ref; PASTED = its generation carries
   // source='pasted' (set by D2-T02 on first paste, no frontend change needed);
-  // otherwise GENERATED = needs_generate + gen status. No backend source column
-  // exists yet, so gen.source is undefined today and every svg need reads GENERATED.
+  // FETCHED/UPLOADED = S-T04 web-fetch / image-upload (source set by POST
+  // .../fetch or POST .../upload — manual always wins, badge shows it);
+  // otherwise GENERATED = needs_generate + gen status.
   const provenanceOf = (asset) => {
     if (asset.library_ref) return 'LIBRARY';
     const gen = gensById[asset.generation_id];
     if (gen && gen.source === 'pasted') return 'PASTED';
+    if (gen && gen.source === 'fetched') return 'FETCHED';
+    if (gen && gen.source === 'uploaded') return 'UPLOADED';
     return 'GENERATED';
   };
 
@@ -180,6 +198,94 @@ export default function S15_Assets({ currentProject }) {
     } catch (e) { sayPaste(asset.id, 'Network error: ' + e.message); } finally { setPasteBusy(false); }
   };
 
+  const sayFetch = (assetId, m) => setFetchMsg((p) => ({ ...p, [assetId]: m }));
+  const sayUpload = (assetId, m) => setUploadMsg((p) => ({ ...p, [assetId]: m }));
+
+  // S-T04 fetch-through-web: search Wikimedia (license-filtered) for this
+  // asset, then attach the picked result (license recorded on the row).
+  const runFetchSearch = async (asset) => {
+    const q = (fetchQ || '').trim();
+    if (!q) { sayFetch(asset.id, 'Type a search first — defaults to the need’s 🔎 query.'); return; }
+    if (!asset.generation_id) { sayFetch(asset.id, 'Library match — nothing to fetch into.'); return; }
+    setFetchBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/fetch-search?q=${encodeURIComponent(q)}`);
+      const data = await safeJson(res);
+      if (!res.ok) { sayFetch(asset.id, 'Search failed: ' + (data.detail || 'Unknown error')); return; }
+      const results = Array.isArray(data.results) ? data.results : [];
+      setFetchFound((p) => ({ ...p, [asset.id]: { query: data.query || q, results } }));
+      sayFetch(asset.id, results.length === 0
+        ? `No freely-licensed files for “${data.query || q}” — try other words.`
+        : `${results.length} freely-licensed file(s) for “${data.query || q}” — Attach one.`);
+    } catch (e) { sayFetch(asset.id, 'Network error: ' + e.message); } finally { setFetchBusy(false); }
+  };
+
+  const attachFetch = async (asset, item) => {
+    if (!asset.generation_id || !item) return;
+    setFetchBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/fetch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_url: item.file_url, source_url: item.source_url || '',
+          license: item.license || '', author: item.author || '',
+        }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayFetch(asset.id, 'Attach failed: ' + (data.detail || 'Unknown error')); return; }
+      // User file wins: badge flips to FETCHED, thumbnail swaps to the real
+      // file (img key on file_path below), license line appears.
+      setGensById((m) => ({
+        ...m,
+        [asset.generation_id]: {
+          ...m[asset.generation_id],
+          source: 'fetched',
+          file_path: data.file_path || m[asset.generation_id]?.file_path,
+          status: data.status || m[asset.generation_id]?.status,
+          license: data.license || '',
+          source_url: data.source_url || '',
+        },
+      }));
+      setImgDead((p) => ({ ...p, [asset.generation_id]: false }));
+      sayFetch(asset.id, `✓ fetched → v${data.version} (${item.license || 'license recorded'}) — history kept`);
+    } catch (e) { sayFetch(asset.id, 'Network error: ' + e.message); } finally { setFetchBusy(false); }
+  };
+
+  // S-T04 image upload: .svg/.png/.jpg/.jpeg file → versioned, pointer moved
+  // (user file wins), history kept. Raster previews immediately; SVG needs
+  // approve (same ladder as paste).
+  const sendUpload = async (asset, file) => {
+    if (!file) return;
+    if (!asset.generation_id) { sayUpload(asset.id, 'Library match — nothing to upload into.'); return; }
+    setUploadBusy(true);
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/upload`, {
+        method: 'POST', body: form,
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayUpload(asset.id, 'Upload rejected: ' + (data.detail || 'Unknown error')); return; }
+      setGensById((m) => ({
+        ...m,
+        [asset.generation_id]: {
+          ...m[asset.generation_id],
+          source: 'uploaded',
+          svg_path: data.svg_path || m[asset.generation_id]?.svg_path,
+          // SVG upload onto a fetched row drops the stale raster pointer
+          // (backend returns file_path:"") — thumbnail honestly flips to
+          // NO-PNG until approve rasters the new SVG.
+          file_path: (data.file_path !== undefined ? data.file_path : m[asset.generation_id]?.file_path),
+          status: data.status || m[asset.generation_id]?.status,
+        },
+      }));
+      setImgDead((p) => ({ ...p, [asset.generation_id]: false }));
+      sayUpload(asset.id, data.svg_path
+        ? `✓ uploaded SVG → ${data.svg_path.split('/').pop()} (approve to raster)`
+        : `✓ uploaded image → ${data.file_path.split('/').pop()} (preview shows it now)`);
+    } catch (e) { sayUpload(asset.id, 'Network error: ' + e.message); } finally { setUploadBusy(false); }
+  };
+
   if (!currentProject) {
     return (
       <div className="max-w-3xl mx-auto mt-12 text-center card">
@@ -188,13 +294,15 @@ export default function S15_Assets({ currentProject }) {
     );
   }
 
-  const counts = { all: needs.length, GENERATED: 0, LIBRARY: 0, PASTED: 0 };
+  const counts = { all: needs.length, GENERATED: 0, LIBRARY: 0, PASTED: 0, FETCHED: 0, UPLOADED: 0 };
   needs.forEach((a) => { counts[provenanceOf(a)] += 1; });
   const shown = filter === 'all' ? needs : needs.filter((a) => provenanceOf(a) === filter);
 
   const badgeStyle = (prov) => {
     if (prov === 'LIBRARY') return 'border-info text-info bg-info/10';
     if (prov === 'PASTED') return 'border-warn text-ink bg-warn/20';
+    if (prov === 'FETCHED') return 'border-info text-info bg-sky/10';
+    if (prov === 'UPLOADED') return 'border-warn text-ink bg-warn/20';
     return 'border-success text-success bg-success/10';
   };
 
@@ -212,11 +320,13 @@ export default function S15_Assets({ currentProject }) {
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.GENERATED} GENERATED</span>
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.LIBRARY} LIBRARY</span>
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.PASTED} PASTED</span>
+        <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.FETCHED} FETCHED</span>
+        <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{counts.UPLOADED} UPLOADED</span>
       </div>
 
-      <Card title={`All assets${filter !== 'all' ? ` · filtered: ${filter}` : ''} (paste live in D2-T02 · playground below in D2-T03)`}>
+      <Card title={`All assets${filter !== 'all' ? ` · filtered: ${filter}` : ''} (fetch + upload live in S-T04 · playground below)`}>
         <div className="flex gap-2 flex-wrap mb-3">
-          {['all', 'GENERATED', 'LIBRARY', 'PASTED'].map((f) => (
+          {['all', 'GENERATED', 'LIBRARY', 'PASTED', 'FETCHED', 'UPLOADED'].map((f) => (
             <BlockButton key={f} variant="secondary" onClick={() => setFilter(f)}>
               {filter === f ? `● ${f}` : f}
             </BlockButton>
@@ -241,6 +351,7 @@ export default function S15_Assets({ currentProject }) {
                 <div key={a.id} className="p-2 border-2 border-ink/20 rounded-md bg-white flex items-start gap-3">
                   {a.generation_id && hasPng ? (
                     <img
+                      key={gen.file_path || a.generation_id}
                       src={`/api/v1/projects/${currentProject.id}/generations/${a.generation_id}/image`}
                       alt={a.name}
                       loading="lazy"
@@ -275,6 +386,13 @@ export default function S15_Assets({ currentProject }) {
                         📚 {lib.title}{lib.file_path ? ` · ${lib.file_path.split('/').pop()}` : ' · no file yet'}
                       </p>
                     )}
+                    {gen && gen.license && (
+                      <p className="mt-1 text-xs font-body text-ink/60 truncate" title={gen.source_url || gen.license}>
+                        © {gen.license}{gen.source_url ? (
+                          <> · <a href={gen.source_url} target="_blank" rel="noreferrer" className="underline hover:text-info">source</a></>
+                        ) : null}
+                      </p>
+                    )}
                     <div className="flex gap-2 mt-2 flex-wrap items-center">
                       {a.generation_id && gen ? (
                         <>
@@ -294,6 +412,29 @@ export default function S15_Assets({ currentProject }) {
                           >
                             {gen.status === 'pending' ? '🧳 bring my own' : '📥 paste-code'}
                           </button>
+                          <button
+                            onClick={() => {
+                              const opening = fetchOpen !== a.id;
+                              setFetchOpen(opening ? a.id : null);
+                              if (opening && !fetchQ) setFetchQ(a.search_query || '');
+                            }}
+                            title="Fetch through the web: Wikimedia search (freely licensed) → Attach (license recorded, versioned, history kept)"
+                            className="text-xs font-heading font-bold hover:text-info"
+                          >
+                            🌐 web-fetch
+                          </button>
+                          <label
+                            title="Upload image (.svg/.png/.jpg/.jpeg): validated, versioned, your file wins, history kept"
+                            className={`text-xs font-heading font-bold hover:text-warn cursor-pointer${uploadBusy ? ' opacity-40 pointer-events-none' : ''}`}
+                          >
+                            {uploadBusy ? '⏳ uploading…' : '📤 upload'}
+                            <input
+                              type="file"
+                              accept=".svg,.png,.jpg,.jpeg"
+                              className="hidden"
+                              onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) sendUpload(a, f); }}
+                            />
+                          </label>
                         </>
                       ) : (
                         <span className="text-xs italic text-ink/50">library match — no svg prompt to copy</span>
@@ -320,6 +461,41 @@ export default function S15_Assets({ currentProject }) {
                       </div>
                     )}
                     {pasteMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{pasteMsg[a.id]}</p>}
+                    {fetchOpen === a.id && a.generation_id && gen && (
+                      <div className="mt-2 p-2 border-2 border-info/40 bg-info/10 rounded space-y-2">
+                        <div className="flex gap-2">
+                          <input
+                            name={`fetch_${a.id}`}
+                            value={fetchOpen === a.id ? fetchQ : ''}
+                            onChange={(e) => setFetchQ(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') runFetchSearch(a); }}
+                            className="flex-1 bg-white border-2 border-ink rounded px-2 py-1 font-body text-xs"
+                            placeholder={`Search Wikimedia for "${a.name}"…`}
+                          />
+                          <BlockButton variant="secondary" disabled={fetchBusy} onClick={() => runFetchSearch(a)}>
+                            {fetchBusy ? 'Searching…' : '🔎 Search'}
+                          </BlockButton>
+                        </div>
+                        {(fetchFound[a.id]?.results || []).map((r, i) => (
+                          <div key={i} className="flex items-center gap-2 bg-white border border-ink/20 rounded p-1">
+                            {r.thumb ? (
+                              <img src={r.thumb} alt={r.title} loading="lazy" className="w-12 h-12 object-cover rounded border border-ink/20 shrink-0" />
+                            ) : (
+                              <div className="w-12 h-12 rounded border border-dashed border-ink/30 bg-panel shrink-0" />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-heading font-bold truncate" title={r.title}>{r.title}</p>
+                              <p className="text-[11px] font-body text-ink/60 truncate">© {r.license}{r.author ? ` · ${r.author.slice(0, 60)}` : ''}</p>
+                            </div>
+                            <BlockButton variant="secondary" disabled={fetchBusy} onClick={() => attachFetch(a, r)}>
+                              Attach
+                            </BlockButton>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {fetchMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{fetchMsg[a.id]}</p>}
+                    {uploadMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{uploadMsg[a.id]}</p>}
                   </div>
                 </div>
               );

@@ -243,6 +243,10 @@ CREATE TABLE IF NOT EXISTS generations (
     -- SCENES-MP4 D2-T02: provenance marker ('' = AI lane, 'pasted' = user
     -- pasted external SVG via POST .../paste; S15 badge reads PASTED).
     source TEXT NOT NULL DEFAULT '',
+    -- SCENES-MP4 S-T04: web-fetch provenance (license + source page recorded
+    -- on POST .../fetch; '' = none / AI lane / user upload of own file).
+    license TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -365,4 +369,8 @@ async def init_project_db(db_conn):
     # SCENES-MP4 D2-T02: provenance marker ('' default = AI lane; 'pasted' set
     # on first paste; heals old DBs idempotently like svg_path above).
     await _ensure_column(db_conn, "generations", "source", "TEXT NOT NULL DEFAULT ''")
+    # SCENES-MP4 S-T04: web-fetch provenance (license + source page recorded on
+    # POST .../fetch; heals old DBs idempotently like source above).
+    await _ensure_column(db_conn, "generations", "license", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(db_conn, "generations", "source_url", "TEXT NOT NULL DEFAULT ''")
     await db_conn.commit()
