@@ -6,7 +6,10 @@ import { playSfx } from '../lib/sfx';
 // "classic (external art)" divider. Ids + labels unchanged (no renamed
 // routes, no deletions) — only order, hints, divider, and the new
 // 'myvideo' node. Full My Video output lands in D5+D10-T03.
+// D5+D10-T02 — new 'setup' node first (step zero: machine checks +
+// one-click fix). Existing order untouched.
 const nodes = [
+  { id: 'setup', label: 'Setup', icon: '🛠️', hint: 'machine checks + one-click fix' },
   { id: 'home', label: 'Home', icon: '🏠', hint: 'Start — pick channel + project' },
   { id: 'idea', label: 'Idea', icon: '💡', hint: 'Shape the idea' },
   { id: 'title', label: 'Title', icon: '🏷️', hint: 'Titles to try' },

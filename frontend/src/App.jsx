@@ -1,5 +1,5 @@
 // frontend/src/App.jsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import BlockButton from './components/BlockButton'
@@ -21,6 +21,7 @@ import S13_Checkpoint from './screens/S13_Checkpoint'
 import S14_Handoff from './screens/S14_Handoff'
 import S17_Settings from './screens/S17_Settings'
 import S18_Prompts from './screens/S18_Prompts'
+import S19_Setup from './screens/S19_Setup'
 import { setSfxEnabled, playSfx } from './lib/sfx'
 
 function App() {
@@ -32,7 +33,7 @@ function App() {
   const [staleBusy, setStaleBusy] = useState(false)
   const [staleMsg, setStaleMsg] = useState('')
 
-  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'assets', 'myvideo', 'export', 'checkpoint', 'handoff', 'settings', 'prompts']
+  const routed = ['home', 'idea', 'title', 'script', 'cast', 'variants', 'locations', 'world', 'beats', 'sheets', 'library', 'assets', 'myvideo', 'export', 'checkpoint', 'handoff', 'settings', 'prompts', 'setup']
 
   useEffect(() => {
     fetch('/api/v1/settings')
@@ -42,6 +43,18 @@ function App() {
         setSfxEnabled(data.sfx);
       })
       .catch(() => setStatus('error'))
+  }, [])
+
+  // D5+D10-T02 — Setup auto-opens on launch while anything is missing (once
+  // per session; free navigation still holds — the user can click away).
+  const setupAutoOpened = useRef(false);
+  useEffect(() => {
+    if (setupAutoOpened.current) return;
+    setupAutoOpened.current = true;
+    fetch('/api/v1/setup/status')
+      .then(res => res.json())
+      .then(data => { if (data && !data.all_ok) setActiveNode('setup'); })
+      .catch(() => {});
   }, [])
 
   // Stale counts refresh on project change and after any re-extract.
@@ -195,6 +208,8 @@ function App() {
             {activeNode === 'settings' && <S17_Settings />}
 
             {activeNode === 'prompts' && <S18_Prompts />}
+
+            {activeNode === 'setup' && <S19_Setup onNavigate={setActiveNode} />}
 
             {!routed.includes(activeNode) && (
               <div className="card max-w-2xl mx-auto mt-12 text-center">
