@@ -5,14 +5,23 @@ import BlockButton from './BlockButton';
 export default function KitWizard({ channel }) {
   const [refs, setRefs] = useState([]);
   const [descriptor, setDescriptor] = useState('');
+  const [presets, setPresets] = useState([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
   const load = () => {
     fetch(`/api/v1/channels/${channel.id}/kit/refs`).then(r => r.json()).then(setRefs);
     fetch(`/api/v1/channels/${channel.id}`).then(r => r.json()).then(ch => setDescriptor(ch.descriptor || ''));
+    fetch('/api/v1/channels/kit/presets').then(r => r.json()).then(setPresets).catch(() => setPresets([]));
   };
   useEffect(() => { load(); }, [channel.id]);
+
+  const applyPreset = (id) => {
+    const p = presets.find(x => x.id === id);
+    if (!p || !p.body) return;
+    setDescriptor(p.body);
+    setMsg(`Preset "${p.name}" filled — edit freely, then press Save Kit to keep it.`);
+  };
 
   const upload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -79,6 +88,22 @@ export default function KitWizard({ channel }) {
       </div>
 
       {msg && <p className="text-sm font-bold text-info mb-2">{msg}</p>}
+
+      <div className="flex gap-2 mb-3 items-center">
+        <label className="text-sm font-bold">Start from a preset:</label>
+        <select
+          onChange={e => { if (e.target.value) applyPreset(e.target.value); e.target.value = ''; }}
+          defaultValue=""
+          className="bg-white border-2 border-ink rounded-md px-2 py-1 font-body text-sm focus:outline-none focus:border-info"
+        >
+          <option value="">Pick a style preset…</option>
+          {presets.map(p => (
+            <option key={p.id} value={p.id} disabled={!p.body}>
+              {p.name}{p.body ? '' : ' (owner wording pending)'}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <textarea
         value={descriptor}

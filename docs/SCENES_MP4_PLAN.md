@@ -593,14 +593,15 @@ with reasons.
 *Acceptance: 30-beat board with 6 problem beats → 24 approve, 6 listed with
 reasons; no silent skips; lint 0 errors.*
 
-**F3-T01 — ffmpeg motion by role (backend render worker, medium, isolated).**
-Pop-in = `fade` on assets/overlays; places = slow zoom-out (1.05→1.0, never
-zoom-in past source — 1080p softens); beats = hard cuts, `xfade` only at
-section turns. Mapping by beat role/framing, subtle by default with an
-intensity setting. Never touches planning/approval; worker-only change.
-*Acceptance: rendered MP4 shows fades on pop-ins + drift on places (prove via
-frame diffs, not eyes); cuts stay cuts elsewhere; render time noted vs -c copy
-baseline.*
+**F3-T01 — ffmpeg motion by role, cheap filters only (backend render worker,
+medium, isolated). Owner ruling 2026-09-27: NO xfade, NO zoompan (force
+re-encode, slow). Allowed vocabulary only: pop-in (`fade in`, assets/plates),
+slide in/out/up/down (animated crop window, plates + inserts), fade-out on the
+final beat. Mapping by beat role/framing, subtle by default with an intensity
+setting. Never touches planning/approval; worker-only change.
+*Acceptance: rendered MP4 shows fades on pop-ins + slides on plates (prove via
+frame diffs, not eyes); cuts stay cuts everywhere else (concat path untouched,
+no re-encode); render time ≈ baseline.*
 
 ---
 
@@ -662,5 +663,6 @@ Ledger: flipped P_-T__ → ✅/🛑
 | D5+D10-T01 | ✅ | uncommitted | Sidebar regroup + purpose hints (frontend-only): nav reordered to real flow script→cast→locations→world→beats→assets→library→checkpoint→myvideo (Sidebar.jsx, ids+labels unchanged); variants/sheets/export under "classic (external art)" divider; hint under every entry (cast "who exists, feeds scenes", sheets "external art only"); new My Video node (S16_MyVideo.jsx placeholder, App.jsx routed+render, full output in T03); backend diff empty; lint 0 errors, build clean |
 | D5+D10-T02 | ✅ | uncommitted | Setup screen (new backend/api/setup.py + S19_Setup.jsx, App.jsx auto-open-once + routed, Sidebar Setup node first): GET /setup/status reuses Inkscape/ffmpeg/Kokoro probes + fresh-import packages + Ollama /api/tags; POST /setup/fix/{id} one button per item (pip/winget/weights-download, PATH refresh, re-probe same probe); live: all-green 5/5, real missing→fix→green loop on packages (sse-starlette uninstall→pip reinstall 3.4.11), other 4 already-ok re-probed green, S19 zero inputs; lint 0 errors (25 warnings: 24 baseline + 1 same-pattern) |
 | D5+D10-T03 | ✅ | uncommitted | Plain-words RenderProgress (scene counts, named-scene errors + Resume) shared by S09 + S16 My Video; GET .../render/finals + GET .../render/file/{name} in render.py (read-only FileResponse pattern); CH03_EP02 4/4 finals play+download byte-identical, layman mapping proven, lint 0 errors, build clean |
+| F1-T01 | ✅ | uncommitted | Style presets (channels.py GET /channels/kit/presets + KitWizard dropdown): 3 listed (wobbly ready v1, flat-toon + paper-cut pending-owner-words stubs with null body, zero invented text); Wobbly served byte-identical from STYLE_WOBBLY_SKETCH.md paragraph (sha 32d06dc9 both sides); picking fills descriptor textarea, Save Kit bumps kit_version, textarea stays editable; new channel CH04 preset→PUT→GET byte-equal, custom edit kept, reverted; lint 0 errors (25 warnings = post-T02 baseline, 0 new) |
 
 `⬜` todo · `🟡` in progress (max one) · `✅` done (acceptance evidenced) · `🛑` blocked (note why).

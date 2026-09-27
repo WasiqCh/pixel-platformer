@@ -1,5 +1,6 @@
 # backend/api/channels.py
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
@@ -66,6 +67,52 @@ async def get_channel(ch_id: str):
     if not row:
         raise HTTPException(404, "channel not found")
     return dict(row)
+
+
+# ---------- Style presets (F1-T01) ----------
+# Wobbly body is served byte-identical from docs/scenes-mp4/STYLE_WOBBLY_SKETCH.md
+# (style paragraph only — title + HOW-IT-FLOWS stay in the doc). Flat-toon +
+# Paper-cut are owner-worded stubs (body=None) until the owner provides text —
+# never invented here.
+
+_WOBBLY_DOC = (
+    Path(__file__).resolve().parents[2]
+    / "docs" / "scenes-mp4" / "STYLE_WOBBLY_SKETCH.md"
+)
+
+
+def _wobbly_body() -> str:
+    if not _WOBBLY_DOC.exists():
+        raise HTTPException(500, f"Wobbly style doc missing: {_WOBBLY_DOC}")
+    lines = _WOBBLY_DOC.read_text(encoding="utf-8").splitlines()
+    paras = []
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            break
+        if ln.strip():
+            paras.append(ln)
+    return "\n".join(paras)
+
+
+STYLE_PRESETS = [
+    {"id": "wobbly", "name": "Wobbly sketch", "version": 1, "status": "ready"},
+    {"id": "flat-toon", "name": "Flat-toon", "version": 1,
+     "status": "pending-owner-words"},
+    {"id": "paper-cut", "name": "Paper-cut", "version": 1,
+     "status": "pending-owner-words"},
+]
+
+
+@router.get("/channels/kit/presets")
+async def list_presets():
+    out = []
+    for p in STYLE_PRESETS:
+        body = _wobbly_body() if p["id"] == "wobbly" else None
+        note = None
+        if body is None:
+            note = "Owner wording pending — pick Wobbly or write a custom descriptor."
+        out.append({**p, "body": body, "note": note})
+    return out
 
 
 # ---------- Style Kit (P08) ----------
