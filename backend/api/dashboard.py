@@ -113,3 +113,149 @@ async def dashboard(project_id: str):
         "next_action": next_action,
         "blockers": blockers,
     }
+
+
+# --- SCENES-MP4 ST-T01: one-call project status (runbook fuel, read-only). ---
+# Aggregates what today takes six queries: beats, voice WAVs, scenes, assets,
+# gens, overlays, plus the render gate and the latest render job. Composes
+# existing queries only — no new logic, no writes (SELECTs + stat() checks;
+# no INSERT/UPDATE/DELETE, no commit, no mkdir). Gate + job payload are reused
+# from backend.api.render (render_gate / _latest_job_row / _job_status_payload)
+# via deferred import so no import cycle can form. Unknown project 404s via
+# _proj before any other work.
+@router.get("/projects/{project_id}/status")
+async def project_status(project_id: str):
+    from pathlib import Path as _Path
+
+    from backend.core.config import DATA_DIR as _DATA_DIR
+    from backend.api import render as _render_api
+
+    proj = await _proj(project_id)
+    folder = proj["folder_name"]
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM beats WHERE project_id=?", (project_id,)
+        ) as cur:
+            beats_total = (await cur.fetchone())["c"]
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM beats WHERE project_id=? AND stale=1",
+            (project_id,),
+        ) as cur:
+            beats_stale = (await cur.fetchone())["c"]
+        async with proj_db.execute(
+            "SELECT id FROM beats WHERE project_id=? AND stale=1 ORDER BY sort_order",
+            (project_id,),
+        ) as cur:
+            stale_beat_ids = [r["id"] for r in await cur.fetchall()]
+        # Scenes are keyed by beat_id (no project_id) — scope via beats JOIN,
+        # same shape as GET .../scenes (scenes.py::list_scenes).
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM scenes s JOIN beats b ON b.id=s.beat_id "
+            "WHERE b.project_id=?",
+            (project_id,),
+        ) as cur:
+            scenes_total = (await cur.fetchone())["c"]
+        # Assets: matched = library_ref set / pending = needs_generate set
+        # (P1-T06 XOR invariant) — same scope shape as GET .../scenes/assets.
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM scene_assets sa JOIN beats b ON b.id=sa.beat_id "
+            "WHERE b.project_id=?",
+            (project_id,),
+        ) as cur:
+            assets_total = (await cur.fetchone())["c"]
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM scene_assets sa JOIN beats b ON b.id=sa.beat_id "
+            "WHERE b.project_id=? AND sa.library_ref IS NOT NULL",
+            (project_id,),
+        ) as cur:
+            assets_matched = (await cur.fetchone())["c"]
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM scene_assets sa JOIN beats b ON b.id=sa.beat_id "
+            "WHERE b.project_id=? AND sa.needs_generate=1",
+            (project_id,),
+        ) as cur:
+            assets_pending = (await cur.fetchone())["c"]
+        # Gens carry project_id — same filter as GET .../generations.
+        async with proj_db.execute(
+            "SELECT status, COUNT(*) c FROM generations WHERE project_id=? "
+            "GROUP BY status",
+            (project_id,),
+        ) as cur:
+            gen_rows = [dict(r) for r in await cur.fetchall()]
+        # Overlays scoped via beats JOIN, same shape as GET .../scenes/overlays.
+        async with proj_db.execute(
+            "SELECT COUNT(*) c FROM scene_overlays so JOIN beats b ON b.id=so.beat_id "
+            "WHERE b.project_id=?",
+            (project_id,),
+        ) as cur:
+            overlays_total = (await cur.fetchone())["c"]
+        # Voice WAV presence uses the same vo_dir layout render_gate reads
+        # (08_export/voiceover/<beat>.wav); non-empty file + measured duration.
+        async with proj_db.execute(
+            "SELECT id, duration_sec FROM beats WHERE project_id=? AND stale=0 "
+            "ORDER BY sort_order",
+            (project_id,),
+        ) as cur:
+            fresh_beats = [dict(r) for r in await cur.fetchall()]
+        latest_job = await _render_api._latest_job_row(proj_db, project_id)
+    finally:
+        await proj_db.close()
+
+    vo_dir = _Path(_DATA_DIR) / "projects" / folder / "08_export" / "voiceover"
+    voice_missing: list[str] = []
+    for b in fresh_beats:
+        wav = vo_dir / f"{b['id']}.wav"
+        try:
+            ok_file = wav.is_file() and wav.stat().st_size > 0
+        except OSError:
+            ok_file = False
+        try:
+            ok_dur = b.get("duration_sec") is not None and float(b["duration_sec"]) > 0
+        except (TypeError, ValueError):
+            ok_dur = False
+        if not (ok_file and ok_dur):
+            voice_missing.append(b["id"])
+    voice_present = len(fresh_beats) - len(voice_missing)
+
+    # Gate is the shared check (pure read) — blocker lists included verbatim.
+    gate = await _render_api.render_gate(project_id)
+
+    task = _render_api._TASKS.get(project_id)
+    alive = task is not None and not task.done()
+    job_payload = _render_api._job_status_payload(latest_job, alive)
+
+    gens_by_status = {r["status"]: int(r["c"]) for r in gen_rows}
+    gens_total = sum(gens_by_status.values())
+
+    return {
+        "project_id": project_id,
+        "beats": {
+            "total": beats_total,
+            "fresh": len(fresh_beats),
+            "stale": beats_stale,
+            "stale_ids": stale_beat_ids,
+        },
+        "voice": {
+            "present": voice_present,
+            "missing": len(voice_missing),
+            "missing_ids": voice_missing,
+        },
+        "scenes": {
+            "total": scenes_total,
+            "approved": gate["approved"],
+            "unapproved": len(gate["unapproved"]),
+            "unapproved_ids": gate["unapproved"],
+            "stale": len(gate["stale_scenes"]),
+            "stale_ids": gate["stale_scenes"],
+        },
+        "assets": {
+            "total": assets_total,
+            "matched": assets_matched,
+            "pending": assets_pending,
+        },
+        "gens": {"total": gens_total, "by_status": gens_by_status},
+        "overlays": {"total": overlays_total},
+        "gate": gate,
+        "render_job": job_payload,
+    }
