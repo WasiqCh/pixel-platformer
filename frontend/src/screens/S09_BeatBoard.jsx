@@ -54,6 +54,17 @@ export default function S09_BeatBoard({ currentProject }) {
   const [pipeBusy, setPipeBusy] = useState(null);
   const [pipeMsg, setPipeMsg] = useState('');
   const [svgProg, setSvgProg] = useState(null);
+  // F2-T01: batch approve — frontend-only, existing endpoints. Clean = zero
+  // missing + zero clashes (scene row present, not stale, >=1 asset, every
+  // svg gen 'final', no FLASH/HOLD/CROSSFADE). Library/world assets (incl. MT
+  // honesty + RW photos) count as present — approval tolerates those boxes by
+  // existing semantics (P3-T04 approved 30/30 with them). Place-missing is
+  // systemic (empty place library) and likewise non-blocking. Sequential PUTs
+  // per clean beat, per-beat errors collected not thrown; flagged remainder
+  // listed with reasons; every beat lands in exactly one bucket (no silent
+  // skips). Compositor/placement/approval semantics untouched (S-T01 owns).
+  const [batchProg, setBatchProg] = useState(null);
+  const [batchResult, setBatchResult] = useState(null);
   // D5+D10-T03 — plain-words render lives in the shared RenderProgress
   // component (no jargon, scene counts, named-scene errors + Resume). Its
   // running flag feeds the row busy lock (no double-fire with ①②③).
@@ -230,6 +241,98 @@ export default function S09_BeatBoard({ currentProject }) {
       }
       setSvgProg({ done: pending.length, total: pending.length, ok, fail: fails.length });
       setPipeMsg(`${ok} generated, ${fails.length} failed of ${pending.length} pending SVGs` + (fails.length ? ` — e.g. ${fails.slice(0, 2).join('; ')}` : ''));
+      refreshScenes();
+    } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
+  };
+
+  // F2-T01 batch approve ("Approve all clean beats"). Existing endpoints
+  // only: GET beats/scenes/assets/generations to classify, then sequential
+  // PUT scenes/{beat} {status:'approved'} for clean beats. Errors per beat
+  // are collected, never thrown (one beat never kills the batch).
+  const approveAllClean = async () => {
+    if (rowBusy) return;
+    setPipeBusy('batch-approve'); setBatchProg(null); setBatchResult(null);
+    setPipeMsg('Checking beats…');
+    try {
+      const pid = currentProject.id;
+      const [bRes, sRes, aRes, gRes] = await Promise.all([
+        fetch(`/api/v1/projects/${pid}/beats`),
+        fetch(`/api/v1/projects/${pid}/scenes`),
+        fetch(`/api/v1/projects/${pid}/scenes/assets`),
+        fetch(`/api/v1/projects/${pid}/generations`),
+      ]);
+      const bData = await safeJson(bRes);
+      const sData = await safeJson(sRes);
+      const aData = await safeJson(aRes);
+      const gData = await safeJson(gRes);
+      if (!bRes.ok) { setPipeMsg('Batch approve failed: beats — ' + (bData.detail || 'Unknown error')); return; }
+      if (!sRes.ok) { setPipeMsg('Batch approve failed: scenes — ' + (sData.detail || 'Unknown error')); return; }
+      if (!aRes.ok) { setPipeMsg('Batch approve failed: scene assets — ' + (aData.detail || 'Unknown error')); return; }
+      if (!gRes.ok) { setPipeMsg('Batch approve failed: generations — ' + (gData.detail || 'Unknown error')); return; }
+      const beatList = Array.isArray(bData) ? bData : [];
+      const sceneByBeat = {};
+      (Array.isArray(sData) ? sData : []).forEach(s => { sceneByBeat[s.beat_id] = s; });
+      const assetsByBeat = {};
+      (Array.isArray(aData) ? aData : []).forEach(a => { (assetsByBeat[a.beat_id] = assetsByBeat[a.beat_id] || []).push(a); });
+      const genRows = Array.isArray(gData.rows) ? gData.rows : (Array.isArray(gData) ? gData : []);
+      const genById = {};
+      genRows.forEach(g => { genById[g.id] = g; });
+      const clean = [];
+      const flagged = [];
+      const skipped = [];
+      for (const b of beatList) {
+        const sc = sceneByBeat[b.id];
+        if (!sc) { flagged.push({ beat_id: b.id, reasons: ['no scene — click ① Plan scenes'] }); continue; }
+        if (sc.status === 'approved') { skipped.push(b.id); continue; }
+        const reasons = [];
+        if (sc.stale) reasons.push('stale — script changed, re-plan scenes');
+        const assets = assetsByBeat[b.id] || [];
+        if (assets.length === 0) {
+          reasons.push('no assets — click ② Plan assets');
+        } else {
+          const unresolved = assets.filter(a => a.needs_generate && !a.generation_id);
+          if (unresolved.length) reasons.push(`${unresolved.length} asset(s) unresolved ("${unresolved[0].name}") — re-plan assets`);
+          const notFinal = assets.filter(a => a.generation_id && (!genById[a.generation_id] || genById[a.generation_id].status !== 'final'));
+          if (notFinal.length) {
+            const g0 = notFinal[0];
+            const st = genById[g0.generation_id] ? genById[g0.generation_id].status : 'missing row';
+            reasons.push(`${notFinal.length} asset(s) not final ("${g0.name}" gen ${g0.generation_id} ${st}) — generate + finalize first`);
+          }
+        }
+        const dur = b.duration_sec ?? 0;
+        if (dur < 3.5) reasons.push(`FLASH ${dur.toFixed(1)}s — very short cut, consider merge`);
+        if (dur > 11) reasons.push(`HOLD ${dur.toFixed(1)}s — long hold, consider split`);
+        const bgN = (b.elements || []).filter(e => e.layer === 'background').length;
+        if (bgN > 1) reasons.push('CROSSFADE — 2 backgrounds, editor crossfades them');
+        if (reasons.length) flagged.push({ beat_id: b.id, reasons });
+        else clean.push(b.id);
+      }
+      const approved = [];
+      const failed = [];
+      setBatchProg({ done: 0, total: clean.length });
+      setPipeMsg(`Approving 0/${clean.length} clean beats… (${flagged.length} flagged, ${skipped.length} already approved)`);
+      for (let i = 0; i < clean.length; i++) {
+        const bid = clean[i];
+        try {
+          const res = await fetch(`/api/v1/projects/${pid}/scenes/${bid}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'approved' })
+          });
+          const data = await safeJson(res);
+          if (!res.ok) failed.push({ beat_id: bid, error: data.detail || 'Unknown error' });
+          else {
+            approved.push(bid);
+            setScenes(s => ({ ...s, [bid]: { ...s[bid], status: 'approved' } }));
+            sayScene(bid, '✓ scene approved (batch)');
+          }
+        } catch (e) { failed.push({ beat_id: bid, error: e.message }); }
+        setBatchProg({ done: i + 1, total: clean.length });
+        setPipeMsg(`Approving ${i + 1}/${clean.length} clean beats… (${approved.length} ok, ${failed.length} failed)`);
+      }
+      const result = { approved, failed, skipped, flagged, total: beatList.length };
+      setBatchResult(result);
+      setPipeMsg(`${approved.length} approved, ${flagged.length} flagged, ${failed.length} failed, ${skipped.length} skipped already-approved of ${beatList.length} beats` +
+        (failed.length ? ` — e.g. ${failed.slice(0, 2).map(f => `${f.beat_id}: ${f.error}`).join('; ')}` : ''));
       refreshScenes();
     } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
   };
@@ -451,6 +554,40 @@ export default function S09_BeatBoard({ currentProject }) {
           <p className="text-xs font-heading font-bold mb-2">④ Your video (plain words — counts are scenes, Resume picks up where it stopped)</p>
           <RenderProgress currentProject={currentProject} onRunningChange={setRenderRunning} />
         </div>
+      </Card>
+
+      <Card title="Batch approve — clean beats in one click (existing PUT per beat, sequential)">
+        <p className="text-xs text-ink/60 mb-2">Approves beats with zero missing + zero clashes. The flagged remainder stays draft below with reasons — your time goes there.</p>
+        <div className="flex gap-2 flex-wrap items-center">
+          <BlockButton variant="secondary" onClick={approveAllClean} disabled={rowBusy}>
+            {pipeBusy === 'batch-approve' && batchProg
+              ? `✅ Approving ${batchProg.done}/${batchProg.total}…`
+              : pipeBusy === 'batch-approve' ? '✅ Checking…' : '✅ Approve all clean beats'}
+          </BlockButton>
+          {batchResult && (
+            <span className="text-xs font-heading">
+              {batchResult.approved.length} approved · {batchResult.flagged.length} flagged · {batchResult.failed.length} failed · {batchResult.skipped.length} skipped of {batchResult.total}
+            </span>
+          )}
+        </div>
+        {batchResult && batchResult.flagged.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {batchResult.flagged.map(f => (
+              <p key={f.beat_id} className="text-xs font-body text-ink/80">
+                <span className="font-mono font-bold">{f.beat_id}</span> — {f.reasons.join('; ')}
+              </p>
+            ))}
+          </div>
+        )}
+        {batchResult && batchResult.failed.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {batchResult.failed.map(f => (
+              <p key={f.beat_id} className="text-xs font-body text-danger">
+                <span className="font-mono font-bold">{f.beat_id}</span> approve failed: {f.error}
+              </p>
+            ))}
+          </div>
+        )}
       </Card>
 
       {beats.length > 0 && (
