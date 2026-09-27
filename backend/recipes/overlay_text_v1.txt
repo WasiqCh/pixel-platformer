@@ -6,13 +6,32 @@ Rules:
   the beat (a name being introduced, a place being shown, a date, a number/statistic, a
   short quote, a warning). Narration alone carries everything else; when in doubt, propose
   nothing. An empty list IS the explicit none, not a failure.
+- CAPS (hard — Stein restraint): at most ONE plate + at most ONE badge per beat —
+  max 2 overlays per beat total, never 3+. Plate = the one main read (roles
+  name|place|quote; positions lower-third|bottom|top centered). Badge = the one small
+  tag (roles date|number|warning; positions top|top-left|top-right). Never 2 plates,
+  never 2 badges — a quote IS a plate, so place+quote or name+quote on one beat is
+  FORBIDDEN. If a beat tempts two plates, keep exactly ONE (the name/place wins unless
+  the quote itself is the beat's point) and delete the loser — narration carries it.
+  Before emitting, count and repair — no exceptions, a muted white quote still costs the
+  plate slot: 1) items <= 2, else delete weakest; 2) roles in name|place|quote <= 1,
+  else delete the weaker plate (FORBIDDEN pairs: name+quote, place+quote, quote+quote,
+  name+place — emit at most ONE of them); 3) roles in date|number|warning <= 1, else
+  delete the weaker badge. Classify by role when position is ambiguous.
+- PALETTE DISCIPLINE (muted world + 1-2 accents): the scene world stays muted; overlays
+  default to muted plates (quote #FFFFFF, date #B8B8C0). Spend at most 1-2 saturated
+  accents per beat (name #FFD34D, place #4DC3FF, number #7DFF8A, warning #FF5A5A) on the
+  one thing that must pop — never 3+ saturated plates on one beat. Warning red only for
+  true warnings. Keep the role->color mapping below unless the accent cap forces a mute
+  back to white/grey.
 - One entry per overlay. text: the exact short words on screen (<=8 words, never a full
   sentence). role: EXACTLY ONE of name|place|date|number|quote|warning (lowercase).
 - color: the plate color for that role as a hex string (name #FFD34D, place #4DC3FF, date
-  #B8B8C0, number #7DFF8A, quote #FFFFFF, warning #FF5A5A — keep these unless the beat
-  demands otherwise).
-- position: where the plate sits — one of top|bottom|lower-third|top-left|top-right
-  (lower-third is the default for names, top for places/dates).
+  #B8B8C0, number #7DFF8A, quote #FFFFFF, warning #FF5A5A — keep these unless the caps
+  or palette discipline above forces a mute).
+- position: where the plate sits — MUST be exactly one of top|bottom|lower-third|
+  top-left|top-right (anything else, e.g. bottom-right, is rejected). Lower-third is
+  the default for names, top for places/dates; plates center, badges corner.
 - reasoning: 1-2 sentences, non-empty, saying WHY this overlay earns screen time on this
   beat (the owner reads this to approve fast).
 Return ONLY JSON: {"overlays": [{"text": <string>, "role": <"name"|"place"|"date"|"number"|"quote"|"warning">, "color": <string>, "position": <string>, "reasoning": <string>}, ...]} — [] when the beat needs no text.
