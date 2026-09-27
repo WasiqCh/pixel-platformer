@@ -639,6 +639,35 @@ always wins: user file beats AI output, no questions.
 *Acceptance: fetch attaches a licensed file; upload accepts PNG + SVG;
 replaced asset keeps version history; preview shows the real file.*
 
+### IDENTITY CHAIN — SAME CHARACTER EVERY BEAT (owner priority 2026-09-27)
+
+Why (owner catch, verified in code): the draw call receives name + one
+description paragraph — never the extracted appearance, never a sheet image.
+Same character across beats can drift into cousins. Three tickets, in order.
+
+**I-T01 — Identity text into draw calls (backend, small).**
+For needs matched to a character/environment, append its extracted identity
+(appearance slots / elements) into `asset_description` server-side inside
+`_svg_asset_info` — no recipe change (description key already exists), no new
+endpoints. Unmatched/generic needs byte-identical context.
+*Acceptance: a C-matched gen's context_pack in job_log carries the appearance
+text; a generic prop's context unchanged; two beats, same character, visibly
+closer (human eyes) or at least textually anchored (job_log).*
+
+**I-T02 — Cast consistency check (backend endpoint, small, no AI).**
+`GET /projects/{id}/cast-consistency`: per character across beats, palette hash
++ silhouette hash of approved PNGs; outliers listed with distances. Report only,
+never blocks.
+*Acceptance: a deliberately-off asset flags with the largest distance; uniform
+cast stays silent.*
+
+**I-T03 — Local recolor (backend + Assets page, small, zero AI).**
+`POST .../generate/svg/{gen_id}/recolor {mapping}`: fill-swap transform on the
+SVG text (parse fills, map old→new, write new version, history intact). Page:
+click a fill swatch → wheel → preview updates. Layman-safe (no code visible).
+*Acceptance: recolor round-trips (red→blue→red byte-equal); invalid color 400;
+revert intact.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
