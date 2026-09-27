@@ -58,6 +58,18 @@ export default function S15_Assets({ currentProject }) {
   const [fetchMsg, setFetchMsg] = useState({});
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadMsg, setUploadMsg] = useState({});
+  // I-T03 — local recolor (fill-swap, zero AI). Click a fill swatch → wheel
+  // → preview updates (client-side swatch preview, no code visible) → Apply
+  // POSTs {mapping:{old:new}} to POST .../generate/svg/{gen_id}/recolor
+  // (versioned _vN, pointer move, history intact — same semantics as
+  // improve). Thumbnail PNG refreshes on approve (same ladder as paste);
+  // the panel re-fetches fills after apply so the new palette shows.
+  const [recolorOpen, setRecolorOpen] = useState(null);
+  const [recolorFills, setRecolorFills] = useState({});
+  const [recolorBusy, setRecolorBusy] = useState(false);
+  const [recolorOld, setRecolorOld] = useState({});
+  const [recolorNew, setRecolorNew] = useState({});
+  const [recolorMsg, setRecolorMsg] = useState({});
 
   // Read-only loads (existing list endpoints only). Effect loader carries
   // no synchronous setState (async .then sets only, S09 pattern) so the
@@ -286,6 +298,81 @@ export default function S15_Assets({ currentProject }) {
     } catch (e) { sayUpload(asset.id, 'Network error: ' + e.message); } finally { setUploadBusy(false); }
   };
 
+  const sayRecolor = (assetId, m) => setRecolorMsg((p) => ({ ...p, [assetId]: m }));
+
+  // <input type="color"> needs #RRGGBB — named colors / #RGB / #RRGGBBAA
+  // fall back to blue; hex-6 passes through (wheel shows the current fill).
+  const wheelDefault = (fill) => {
+    if (typeof fill === 'string' && /^#[0-9a-fA-F]{6}$/.test(fill.trim())) return fill.trim();
+    if (typeof fill === 'string' && /^#[0-9a-fA-F]{3}$/.test(fill.trim())) {
+      const h = fill.trim().slice(1);
+      return `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`;
+    }
+    return '#0000FF';
+  };
+
+  // I-T03 recolor: open panel → GET fills (swatches) → click swatch picks
+  // old → wheel picks new (preview box updates live) → Apply POSTs mapping.
+  const openRecolor = async (asset) => {
+    if (recolorOpen === asset.id) { setRecolorOpen(null); return; }
+    if (!asset.generation_id) { sayRecolor(asset.id, 'Library match — nothing to recolor.'); return; }
+    setRecolorOpen(asset.id);
+    sayRecolor(asset.id, '');
+    setRecolorBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/fills`);
+      const data = await safeJson(res);
+      if (!res.ok) { sayRecolor(asset.id, 'Fills unavailable: ' + (data.detail || 'Unknown error')); return; }
+      const fills = Array.isArray(data.fills) ? data.fills : [];
+      setRecolorFills((p) => ({ ...p, [asset.id]: { fills, svg_path: data.svg_path || '' } }));
+      if (fills.length > 0) {
+        setRecolorOld((p) => ({ ...p, [asset.id]: p[asset.id] || fills[0] }));
+        setRecolorNew((p) => ({ ...p, [asset.id]: p[asset.id] || wheelDefault(fills[0]) }));
+      } else {
+        sayRecolor(asset.id, 'No fills found in the current SVG — nothing to swap.');
+      }
+    } catch (e) { sayRecolor(asset.id, 'Network error: ' + e.message); } finally { setRecolorBusy(false); }
+  };
+
+  const applyRecolor = async (asset) => {
+    const old = (recolorOld[asset.id] || '').trim();
+    const fresh = (recolorNew[asset.id] || '').trim();
+    if (!old) { sayRecolor(asset.id, 'Click a fill swatch first — no source color picked.'); return; }
+    if (!fresh) { sayRecolor(asset.id, 'Pick a new color from the wheel first.'); return; }
+    if (!asset.generation_id) { sayRecolor(asset.id, 'Library match — nothing to recolor.'); return; }
+    setRecolorBusy(true);
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/recolor`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapping: { [old]: fresh } }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { sayRecolor(asset.id, 'Recolor rejected: ' + (data.detail || 'Unknown error')); return; }
+      // New version, pointer moved, history intact: patch the gen row (same
+      // shape as paste) so badges/counts stay truthful; PNG refreshes on
+      // approve (same ladder as paste — honest note below).
+      setGensById((m) => ({
+        ...m,
+        [asset.generation_id]: {
+          ...m[asset.generation_id],
+          svg_path: data.svg_path || m[asset.generation_id]?.svg_path,
+          status: data.status || m[asset.generation_id]?.status,
+        },
+      }));
+      sayRecolor(asset.id, `✓ recolored ${old} → ${fresh} (swapped ${data.swapped}, → v${data.version}) — approve to raster the new PNG`);
+      const rf = await fetch(`/api/v1/projects/${currentProject.id}/generate/svg/${asset.generation_id}/fills`);
+      const rd = await safeJson(rf);
+      if (rf.ok) {
+        const fills = Array.isArray(rd.fills) ? rd.fills : [];
+        setRecolorFills((p) => ({ ...p, [asset.id]: { fills, svg_path: rd.svg_path || '' } }));
+        if (fills.length > 0 && !fills.includes(old)) {
+          setRecolorOld((p) => ({ ...p, [asset.id]: fills[0] }));
+          setRecolorNew((p) => ({ ...p, [asset.id]: wheelDefault(fills[0]) }));
+        }
+      }
+    } catch (e) { sayRecolor(asset.id, 'Network error: ' + e.message); } finally { setRecolorBusy(false); }
+  };
+
   if (!currentProject) {
     return (
       <div className="max-w-3xl mx-auto mt-12 text-center card">
@@ -435,6 +522,13 @@ export default function S15_Assets({ currentProject }) {
                               onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) sendUpload(a, f); }}
                             />
                           </label>
+                          <button
+                            onClick={() => openRecolor(a)}
+                            title="Local recolor: click a fill swatch → wheel → Apply (new version, history kept, zero AI, no code visible)"
+                            className="text-xs font-heading font-bold hover:text-info"
+                          >
+                            {recolorOpen === a.id ? '🎨 recolor… (open)' : '🎨 recolor'}
+                          </button>
                         </>
                       ) : (
                         <span className="text-xs italic text-ink/50">library match — no svg prompt to copy</span>
@@ -496,6 +590,56 @@ export default function S15_Assets({ currentProject }) {
                     )}
                     {fetchMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{fetchMsg[a.id]}</p>}
                     {uploadMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{uploadMsg[a.id]}</p>}
+                    {recolorOpen === a.id && a.generation_id && gen && (
+                      <div className="mt-2 p-2 border-2 border-warn/50 bg-warn/10 rounded space-y-2">
+                        <p className="text-xs font-heading font-bold">🎨 Recolor — click a swatch, spin the wheel, Apply (no code, new version kept)</p>
+                        {(recolorFills[a.id]?.fills || []).length > 0 ? (
+                          <>
+                            <div className="flex gap-2 flex-wrap">
+                              {(recolorFills[a.id]?.fills || []).map((f) => (
+                                <button
+                                  key={f}
+                                  onClick={() => {
+                                    setRecolorOld((p) => ({ ...p, [a.id]: f }));
+                                    setRecolorNew((p) => ({ ...p, [a.id]: wheelDefault(f) }));
+                                  }}
+                                  title={`Swap ${f} → wheel color`}
+                                  className={`flex items-center gap-1 px-2 py-1 rounded border-2 text-xs font-mono${(recolorOld[a.id] || (recolorFills[a.id]?.fills || [])[0]) === f ? ' border-ink bg-white' : ' border-ink/20 bg-white/60'}`}
+                                >
+                                  <span className="inline-block w-4 h-4 rounded border border-ink/40" style={{ backgroundColor: f }} />
+                                  {f}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex gap-3 items-center flex-wrap bg-white border border-ink/20 rounded p-2">
+                              <span className="text-xs font-heading font-bold">old</span>
+                              <span className="inline-block w-8 h-8 rounded border-2 border-ink" style={{ backgroundColor: recolorOld[a.id] || (recolorFills[a.id]?.fills || [])[0] }} />
+                              <span className="text-xs font-mono">{recolorOld[a.id] || (recolorFills[a.id]?.fills || [])[0]}</span>
+                              <span className="text-xs font-heading font-bold">→ new</span>
+                              <input
+                                type="color"
+                                aria-label={`New color for ${recolorOld[a.id] || 'fill'}`}
+                                value={/^#[0-9a-fA-F]{6}$/.test(recolorNew[a.id] || '') ? recolorNew[a.id] : wheelDefault(recolorOld[a.id] || '#0000FF')}
+                                onChange={(e) => setRecolorNew((p) => ({ ...p, [a.id]: e.target.value }))}
+                                className="w-10 h-8 cursor-pointer bg-white border-2 border-ink rounded"
+                              />
+                              <span className="inline-block w-8 h-8 rounded border-2 border-ink" style={{ backgroundColor: recolorNew[a.id] || '#0000FF' }} />
+                              <span className="text-xs font-mono">{recolorNew[a.id] || ''}</span>
+                              <BlockButton variant="secondary" disabled={recolorBusy} onClick={() => applyRecolor(a)}>
+                                {recolorBusy ? 'Recoloring…' : '🎨 Apply recolor'}
+                              </BlockButton>
+                              <BlockButton variant="secondary" onClick={() => setRecolorOpen(null)}>
+                                Close
+                              </BlockButton>
+                            </div>
+                            <p className="text-[11px] font-body text-ink/60">Preview updates on the swatches now; the PNG thumbnail refreshes after approve (same ladder as paste).</p>
+                          </>
+                        ) : (
+                          <p className="text-xs font-body text-ink/60">{recolorBusy ? 'Loading fills…' : 'No fills loaded yet.'}</p>
+                        )}
+                      </div>
+                    )}
+                    {recolorMsg[a.id] && <p className="mt-1 text-xs font-heading text-primary">{recolorMsg[a.id]}</p>}
                   </div>
                 </div>
               );

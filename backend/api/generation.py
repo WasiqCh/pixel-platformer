@@ -797,6 +797,268 @@ async def paste_svg_one(project_id: str, gen_id: int, data: SvgPasteRequest):
     return await _paste_svg_row(project_id, folder, ch_id, gen_id, data.code)
 
 
+# --- SCENES-MP4 I-T03: local recolor (fill-swap, zero AI) ---
+# POST .../generate/svg/{gen_id}/recolor {mapping}: parse the current SVG
+# text's fills, map old->new, write a new versioned _vN.svg, move the newest
+# pointer (history intact — same semantics as improve/paste). Approved/final
+# rows demote to generated (needs re-approve, same as improve). Only
+# svg_path + status move (file_path/source untouched — improve semantics, so
+# the old raster stays until re-approve refreshes it). No AI calls here (no
+# LLM jobs, no recipes, no schemas needed — §4 rule 4 applies to AI outputs;
+# this lane transforms user-approved bytes only).
+# GET .../generate/svg/{gen_id}/fills: read-only distinct-fill list for the
+# Assets page swatches (no writes). Both endpoints are additive (no table
+# changes, no renames).
+
+_CSS_NAMED_COLORS = frozenset("""
+aliceblue antiquewhite aqua aquamarine azure beige bisque black
+blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+darkslateblue darkslategray darkslategrey darkturquoise darkviolet
+deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green
+greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender
+lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon
+lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue
+lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue
+mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen
+mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+navajowhite navy oldlace olive olivedrab orange orangered orchid
+palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff
+peru pink plum powderblue purple rebeccapurple red rosybrown royalblue
+saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue
+slateblue slategray slategrey snow springgreen steelblue tan teal thistle
+tomato turquoise violet wheat white whitesmoke yellow yellowgreen
+""".split())
+
+_SVG_FILL_KEYWORDS = frozenset({"none", "transparent", "currentcolor"})
+
+_HEX_COLOR_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+
+_FILL_ATTR_RE = re.compile(r"(fill\s*=\s*[\"'])([^\"']+)([\"'])", flags=re.IGNORECASE)
+
+_STYLE_ATTR_RE = re.compile(r"(style\s*=\s*)([\"'])(.*?)\2", flags=re.IGNORECASE | re.DOTALL)
+
+_STYLE_FILL_DECL_RE = re.compile(
+    r"(?<![-\w])fill(?![-\w])(\s*:\s*)([^;\"'}]+?)(\s*(?:;|$))",
+    flags=re.IGNORECASE)
+
+
+def _is_valid_css_color(s: str) -> bool:
+    """Layman-wheel guard: hex #RGB/#RRGGBB/#RRGGBBAA, SVG keywords, or a CSS
+    named color (case-insensitive). Anything else (empty, URLs, functions,
+    markup) is an invalid color -> 400, nothing written."""
+    t = (s or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    if low in _SVG_FILL_KEYWORDS:
+        return True
+    if _HEX_COLOR_RE.match(t):
+        return True
+    if low in _CSS_NAMED_COLORS:
+        return True
+    return False
+
+
+def _extract_svg_fills(svg_text: str) -> list[str]:
+    """Distinct fill values in first-seen order (exact strings, no norm).
+
+    Covers fill="..." attributes + fill:... declarations inside style="..."
+    attributes (the shapes AI SVG actually emits). <style>-block classes are
+    out of scope for v1 (honest no-match -> 400, never a silent half-swap)."""
+    seen: list[str] = []
+    for m in _FILL_ATTR_RE.finditer(svg_text or ""):
+        v = (m.group(2) or "").strip()
+        if not v:
+            continue
+        # Keep exact strings (case-sensitive distinct): #FF0000 vs #ff0000
+        # are different bytes the round-trip must preserve — list both.
+        if v not in seen:
+            seen.append(v)
+    for m in _STYLE_ATTR_RE.finditer(svg_text or ""):
+        inner = m.group(3) or ""
+        for d in _STYLE_FILL_DECL_RE.finditer(inner):
+            v = (d.group(2) or "").strip()
+            if v and v not in seen:
+                seen.append(v)
+    return seen
+
+
+def _apply_fill_mapping(svg_text: str, norm: dict[str, str]) -> tuple[str, int]:
+    """Single-pass fill swap (no cascading): every fill whose stripped-lower
+    form sits in norm is replaced with norm[lower] verbatim; everything else
+    (spacing, quotes, semicolons, non-fill attrs) is preserved byte-for-byte
+    so red->blue->red round-trips exactly. Returns (new_text, swapped)."""
+
+    swapped = 0
+
+    def _attr_repl(m):
+        nonlocal swapped
+        prefix, val, quote = m.group(1), m.group(2), m.group(3)
+        key = (val or "").strip().lower()
+        if key in norm:
+            swapped += 1
+            return f"{prefix}{norm[key]}{quote}"
+        return m.group(0)
+
+    out = _FILL_ATTR_RE.sub(_attr_repl, svg_text)
+
+    def _style_repl(m):
+        nonlocal swapped
+        head, quote, inner = m.group(1), m.group(2), m.group(3)
+
+        def _decl_repl(d):
+            nonlocal swapped
+            colon, val, tail = d.group(1), d.group(2), d.group(3)
+            key = (val or "").strip().lower()
+            if key in norm:
+                swapped += 1
+                return f"fill{colon}{norm[key]}{tail}"
+            return d.group(0)
+
+        new_inner = _STYLE_FILL_DECL_RE.sub(_decl_repl, inner)
+        return f"{head}{quote}{new_inner}{quote}"
+
+    out = _STYLE_ATTR_RE.sub(_style_repl, out)
+    return out, swapped
+
+
+class SvgRecolorRequest(BaseModel):
+    mapping: dict[str, str]
+
+
+async def _recolor_svg_row(project_id, folder, ch_id, gen_id, mapping: dict):
+    """Fill-swap transform on the current SVG text (I-T03).
+
+    Validates every old/new color (invalid -> 400, nothing written), requires
+    at least one real change, requires the current SVG to exist, swaps fills
+    (fill= attrs + style= fill: decls, single-pass), re-validates through the
+    real validate_svg_text path, writes versioned _vN.svg + pointer move
+    (history intact), demotes to generated. Revert endpoint untouched.
+    """
+    if not isinstance(mapping, dict) or len(mapping) == 0:
+        raise HTTPException(400, "mapping must be a non-empty object {old_color: new_color} (nothing written).")
+    if len(mapping) > 20:
+        raise HTTPException(400, "mapping holds at most 20 entries (nothing written).")
+    norm: dict[str, str] = {}
+    for raw_old, raw_new in mapping.items():
+        old = (raw_old or "").strip() if isinstance(raw_old, str) else ""
+        new = (raw_new or "").strip() if isinstance(raw_new, str) else ""
+        if not old or not new:
+            raise HTTPException(400, "mapping keys and values must be non-empty color strings (nothing written).")
+        if not _is_valid_css_color(old):
+            raise HTTPException(400, f"invalid color '{old[:60]}' (nothing written).")
+        if not _is_valid_css_color(new):
+            raise HTTPException(400, f"invalid color '{new[:60]}' (nothing written).")
+        low = old.lower()
+        if low in norm:
+            raise HTTPException(400, f"duplicate mapping for '{old[:60]}' (nothing written).")
+        if low == new.lower():
+            continue  # no-op entry (same color) — skip, never mint identical versions
+        norm[low] = new  # new stored verbatim (wheel hex preserved exactly)
+    if not norm:
+        raise HTTPException(400, "mapping changes nothing (old and new are the same color).")
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    svg_dir = base / "06_sheets" / "svg"
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?", (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if row["kind"] != "svg":
+        await proj_db.close()
+        raise HTTPException(400, "Only kind='svg' rows use the SVG pipeline.")
+    if not row["svg_path"]:
+        await proj_db.close()
+        raise HTTPException(400, "No SVG version yet — generate once before recoloring.")
+    prev_file = base / row["svg_path"]
+    if not prev_file.exists():
+        await proj_db.close()
+        raise HTTPException(400, f"Previous SVG file missing on disk: {row['svg_path']}")
+    try:
+        previous_svg = prev_file.read_text(encoding="utf-8")
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(400, f"Cannot read previous SVG: {type(e).__name__}")
+    if not previous_svg.strip():
+        await proj_db.close()
+        raise HTTPException(400, "Previous SVG is empty — cannot recolor.")
+    new_svg, swapped = _apply_fill_mapping(previous_svg, norm)
+    if swapped == 0:
+        have = _extract_svg_fills(previous_svg)
+        await proj_db.close()
+        raise HTTPException(
+            400, f"no matching fills (have [{', '.join(have[:12])}]{'…' if len(have) > 12 else ''} — nothing written).")
+    try:
+        clean_svg = validate_svg_text(new_svg)
+    except ValueError as e:
+        await proj_db.close()
+        raise HTTPException(400, f"{str(e)[:280]} (nothing written).")
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    previous = row.get("svg_path") or ""
+    try:
+        ver = _next_svg_version(svg_dir, clean)
+        rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+        (svg_dir / f"{clean}_v{ver}.svg").write_text(clean_svg, encoding="utf-8")
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+    await proj_db.execute(
+        "UPDATE generations SET svg_path=?, status='generated', error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+            "version": ver, "previous_svg_path": previous or None,
+            "swapped": swapped, "mapping": mapping}
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/recolor")
+async def recolor_svg_one(project_id: str, gen_id: int, data: SvgRecolorRequest):
+    folder, ch_id = await _proj(project_id)
+    return await _recolor_svg_row(project_id, folder, ch_id, gen_id, data.mapping)
+
+
+@router.get("/projects/{project_id}/generate/svg/{gen_id}/fills")
+async def list_svg_fills(project_id: str, gen_id: int):
+    """Distinct fills in the current SVG (read-only swatch source, no writes)."""
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+                "SELECT gen_label, asset_ref, svg_path, status FROM generations WHERE id=? AND project_id=?",
+                (gen_id, project_id)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await proj_db.close()
+    if not row:
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    if not row.get("svg_path"):
+        raise HTTPException(400, "No SVG version yet — generate once before listing fills.")
+    svg_file = base / row["svg_path"]
+    if not svg_file.exists():
+        raise HTTPException(400, f"SVG file missing on disk: {row['svg_path']}")
+    try:
+        text = svg_file.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(400, f"Cannot read SVG: {type(e).__name__}")
+    if not text.strip():
+        raise HTTPException(400, "SVG is empty.")
+    fills = _extract_svg_fills(text)
+    return {"gen_id": gen_id, "svg_path": row["svg_path"], "status": row.get("status") or "",
+            "fills": fills, "count": len(fills)}
+
+
 # --- SCENES-MP4 S-T04: per-asset web-fetch + image upload (backend) ---
 # Every asset already has regen/retry (P2-T04) + paste-code (D2-T02). This
 # block adds the two NEW lanes, both per-generation (per asset):
