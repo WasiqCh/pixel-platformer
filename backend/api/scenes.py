@@ -941,9 +941,32 @@ async def delete_scene_overlay(project_id: str, overlay_id: int):
 # silent blank. Previews cache per scene-hash under 07_beats/previews/.
 
 _PRE_W, _PRE_H = 1920, 1080
+# SCENES-MP4 F1-T02: legacy canvas fallback (pre-wheel previews were dark
+# navy). The live default is the channel chroma (green #00FF00) unless the
+# project saves its own color — resolved per preview via _resolve_canvas_bg().
+# Frames reuse scene_preview() by byte-copy (P4-T02), so they read the same bg.
 _PRE_BG = (26, 29, 41)
+_PRE_BG_FALLBACK_HEX = "#00FF00"
 _MISSING_FILL = (58, 58, 64)
 _MISSING_EDGE = (255, 85, 85)
+
+
+async def _resolve_canvas_bg(project_id: str) -> tuple[str, tuple[int, int, int]]:
+    """F1-T02 effective canvas background (hex + RGB). Project override wins;
+    otherwise the channel chroma (channels.bg_default_hex); otherwise green.
+    The green auto-white asset logic is untouched — this is the scene canvas
+    only. Never raises: falls back to chroma green on any lookup failure."""
+    try:
+        from backend.api.projects import resolve_project_background
+        bg = await resolve_project_background(project_id)
+        hex_color = (bg.get("bg_color") or _PRE_BG_FALLBACK_HEX).strip().upper()
+        rgb = tuple(bg.get("rgb") or (0, 255, 0))
+        if (len(rgb) != 3 or
+                not all(isinstance(c, int) and 0 <= c <= 255 for c in rgb)):
+            rgb = (0, 255, 0)
+        return hex_color, (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    except Exception:
+        return _PRE_BG_FALLBACK_HEX, (0, 255, 0)
 
 _FRAMING_SCALE = {
     "close": 0.55, "medium": 0.42, "wide": 0.32,
@@ -1366,6 +1389,11 @@ async def scene_preview(project_id: str, beat_id: str):
                       "world_id": ((lib.get("asset_ref") or "") if lib else "")})
     items.sort(key=lambda it: (_LAYER_RANK.get(it["layer"], 1), it["need"]["id"]))
 
+    # F1-T02: effective canvas background (project override or channel
+    # chroma). Resolved before the hash so the color is part of the key —
+    # a bg change MUST bust the cache (stale art on bg change is a bug).
+    bg_hex, bg_rgb = await _resolve_canvas_bg(project_id)
+
     # --- scene-hash cache key (D9-T02: overlay CONTENT is part of the key —
     # a one-letter text change MUST bust the cache; stale art is a bug) ---
     # D9-T03: MT honesty text + world linkage are part of the key — a world
@@ -1376,6 +1404,7 @@ async def scene_preview(project_id: str, beat_id: str):
         "place_asset_ref": place_ref,
         "shot": scene.get("shot") or "",
         "scene_updated_at": scene.get("updated_at") or "",
+        "bg": bg_hex,
         "elements": [
             {"id": e["id"], "asset_ref": e["asset_ref"], "x": e.get("x"),
              "y": e.get("y"), "scale": e.get("scale"),
@@ -1416,6 +1445,7 @@ async def scene_preview(project_id: str, beat_id: str):
                      "X-Assets-Total": str(len(items) + 1),
                      "X-Overlays-Total": str(len(overlay_rows)),
                      "X-Map-Count": str(map_count),
+                     "X-Background-Color": bg_hex,
                      "X-World-Total": str(sum(1 for it in items if it.get("world_id")))} )
 
     # --- render ---
@@ -1426,7 +1456,7 @@ async def scene_preview(project_id: str, beat_id: str):
         _probe_overlay_font()
     except FileNotFoundError as e:
         raise HTTPException(500, f"Overlay font missing (loud fallback): {e}")
-    canvas = _Image.new("RGB", (_PRE_W, _PRE_H), _PRE_BG)
+    canvas = _Image.new("RGB", (_PRE_W, _PRE_H), bg_rgb)
     if place_path is not None:
         try:
             with _Image.open(place_path) as pim:
@@ -1506,4 +1536,5 @@ async def scene_preview(project_id: str, beat_id: str):
                  "X-Assets-Total": str(len(items) + 1),
                  "X-Overlays-Total": str(len(overlay_rows)),
                  "X-Map-Count": str(map_count),
+                 "X-Background-Color": bg_hex,
                  "X-World-Total": str(sum(1 for it in items if it.get("world_id")))})

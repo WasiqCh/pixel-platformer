@@ -24,6 +24,89 @@ class ProjectRename(BaseModel):
     slug: str
 
 
+# SCENES-MP4 F1-T02: project canvas background (color-wheel input).
+# Stored per project in app.db projects.bg_color_hex (NULL = channel chroma
+# default). The green auto-white asset logic is untouched — this is the
+# scene canvas only (compositor + previews + frames read it).
+class BackgroundUpdate(BaseModel):
+    color: str | None = None
+
+
+_DEFAULT_CHROMA = "#00FF00"
+
+
+def _normalize_hex_color(raw: str | None) -> str | None:
+    """Validate + normalize a #RGB/#RRGGBB color. None/empty = reset to
+    default (NULL). Returns uppercase #RRGGBB. Raises ValueError on bad input."""
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if not s.startswith("#"):
+        raise ValueError("color must be #RGB or #RRGGBB (e.g. #FF0000)")
+    h = s[1:].strip()
+    if len(h) == 3 and all(c in "0123456789abcdefABCDEF" for c in h):
+        return "#" + "".join(c.upper() * 2 for c in h)
+    if len(h) == 6 and all(c in "0123456789abcdefABCDEF" for c in h):
+        return "#" + h.upper()
+    raise ValueError("color must be #RGB or #RRGGBB (e.g. #FF0000)")
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+async def resolve_project_background(project_id: str) -> dict:
+    """Effective canvas background for a project. Returns {bg_color,
+    channel_chroma, is_default, rgb}. bg_color is the effective #RRGGBB
+    (project override when set+valid, else channel chroma, else #00FF00).
+    Never raises 404-friendly — raises HTTPException(404) when unknown."""
+    db = await get_app_db()
+    try:
+        async with db.execute(
+            "SELECT channel_id, bg_color_hex FROM projects WHERE id=?",
+            (project_id,)) as cur:
+            proj = await cur.fetchone()
+        if not proj:
+            raise HTTPException(404, "Project not found")
+        ch_id = proj["channel_id"]
+        try:
+            raw = (proj["bg_color_hex"] or "").strip()
+        except Exception:
+            raw = ""
+        chroma = _DEFAULT_CHROMA
+        try:
+            async with db.execute(
+                "SELECT bg_default_hex FROM channels WHERE id=?", (ch_id,)) as cur:
+                ch = await cur.fetchone()
+            if ch and (ch["bg_default_hex"] or "").strip():
+                chroma = ch["bg_default_hex"].strip().upper()
+        except Exception:
+            pass
+        if raw:
+            try:
+                norm = _normalize_hex_color(raw)
+                eff = norm or chroma
+                is_default = False if norm else True
+            except ValueError:
+                eff, is_default = chroma, True
+        else:
+            eff, is_default = chroma, True
+        try:
+            rgb = _hex_to_rgb(eff)
+        except Exception:
+            eff, rgb, is_default = _DEFAULT_CHROMA, (0, 255, 0), True
+        return {"bg_color": eff, "channel_chroma": chroma,
+                "is_default": is_default, "rgb": rgb,
+                "project_override": raw or None}
+    finally:
+        await db.close()
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -99,6 +182,42 @@ async def rename_project(project_id: str, data: ProjectRename):
     await db.commit()
     await db.close()
     return {"status": "renamed"}
+
+
+# --- SCENES-MP4 F1-T02: project canvas background (wheel input, per project).
+@router.get("/projects/{project_id}/background")
+async def get_background(project_id: str):
+    """Effective canvas background: project override or channel chroma default.
+    The color-wheel input defaults to channel_chroma; is_default=True means
+    the project follows the channel (green auto-white asset logic untouched)."""
+    return await resolve_project_background(project_id)
+
+
+@router.put("/projects/{project_id}/background")
+async def set_background(project_id: str, data: BackgroundUpdate):
+    """Save per-project canvas background. {color: '#FF0000'} sets it;
+    {color: null/''} resets to the channel chroma default. Returns the
+    resolved effective background (same shape as GET)."""
+    try:
+        norm = _normalize_hex_color(data.color)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    db = await get_app_db()
+    try:
+        async with db.execute(
+            "SELECT id FROM projects WHERE id=?", (project_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Project not found")
+        await db.execute(
+            "UPDATE projects SET bg_color_hex=?, updated_at=? WHERE id=?",
+            (norm, _now(), project_id))
+        await db.commit()
+    finally:
+        await db.close()
+    out = await resolve_project_background(project_id)
+    out["status"] = "saved"
+    return out
 
 
 @router.delete("/projects/{project_id}")

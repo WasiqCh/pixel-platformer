@@ -59,6 +59,37 @@ export default function S09_BeatBoard({ currentProject }) {
   // running flag feeds the row busy lock (no double-fire with ①②③).
   const [renderRunning, setRenderRunning] = useState(false);
   const rowBusy = pipeBusy !== null || renderRunning;
+  // F1-T02 — project canvas background wheel (small). Color input defaults
+  // to the channel chroma; saved per project via PUT .../background (null
+  // resets to default). Previews + frames read it (backend cache key gains
+  // the color — a change busts stale art by construction).
+  const [bgInfo, setBgInfo] = useState(null);
+  const [bgDraft, setBgDraft] = useState('#00FF00');
+  const [bgBusy, setBgBusy] = useState(false);
+  const [bgMsg, setBgMsg] = useState('');
+  const refreshBg = () => {
+    if (!currentProject) return;
+    fetch(`/api/v1/projects/${currentProject.id}/background`)
+      .then(r => r.json())
+      .then(d => { setBgInfo(d); if (d?.bg_color) setBgDraft(d.bg_color); })
+      .catch(() => {});
+  };
+  useEffect(refreshBg, [currentProject]);
+  const saveBg = async (color) => {
+    if (!currentProject || bgBusy) return;
+    setBgBusy(true); setBgMsg('');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/background`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ color })
+      });
+      const data = await safeJson(res);
+      if (!res.ok) { setBgMsg('Save failed: ' + (data.detail || 'Unknown error')); return; }
+      setBgInfo(data); if (data?.bg_color) setBgDraft(data.bg_color);
+      setBgMsg(data?.is_default ? `Back to channel default ${data.bg_color} — previews re-render on next view.` : `Saved ${data.bg_color} — previews + frames use it (old art kept, cache busts).`);
+      setPreviewDead({});
+    } catch (e) { setBgMsg('Network error: ' + e.message); } finally { setBgBusy(false); }
+  };
 
   const refresh = () => {
     if (currentProject)
@@ -374,6 +405,32 @@ export default function S09_BeatBoard({ currentProject }) {
         </span>
         <span className="text-xs font-heading font-bold bg-panel border-2 border-ink px-3 py-1 rounded">{totalElements} ELEMENTS</span>
       </div>
+
+      <Card title="Canvas background (project wheel — previews + frames)">
+        <div className="flex gap-3 items-center flex-wrap">
+          <input
+            type="color"
+            value={bgDraft}
+            onChange={e => setBgDraft(e.target.value)}
+            title="Pick the scene canvas color"
+            className="w-12 h-10 border-2 border-ink rounded cursor-pointer bg-white"
+          />
+          <span className="text-xs font-mono border-2 border-ink rounded px-2 py-1 bg-white">{bgDraft}</span>
+          <BlockButton variant="secondary" onClick={() => saveBg(bgDraft)} disabled={bgBusy || rowBusy}>
+            {bgBusy ? 'Saving…' : 'Save color'}
+          </BlockButton>
+          <BlockButton variant="secondary" onClick={() => saveBg(null)} disabled={bgBusy || rowBusy}>
+            Reset to channel default
+          </BlockButton>
+          {bgInfo && (
+            <span className="text-xs font-heading">
+              now {bgInfo.bg_color}{bgInfo.is_default ? ` (channel default ${bgInfo.channel_chroma})` : ' (project override)'}
+            </span>
+          )}
+        </div>
+        {bgMsg && <p className="mt-2 text-xs font-heading text-primary">{bgMsg}</p>}
+        <p className="mt-1 text-xs text-ink/60">Asset green auto-white stays untouched — this is the scene canvas only (key {bgInfo?.bg_color || bgDraft} in the editor).</p>
+      </Card>
 
       <Card title="Scene → MP4 pipeline ①→④ (existing endpoints, no API tools needed)">
         <div className="flex gap-2 flex-wrap">

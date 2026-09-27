@@ -11,10 +11,12 @@ CREATE TABLE IF NOT EXISTS channels (
 );
 
 -- 2. projects (P-01: folder_name is stable, slug is display-only)
+-- SCENES-MP4 F1-T02: bg_color_hex (nullable; NULL = channel chroma default).
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES channels(id),
     slug TEXT NOT NULL, folder_name TEXT NOT NULL UNIQUE,
     stage TEXT NOT NULL DEFAULT 'idea',
+    bg_color_hex TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
@@ -329,6 +331,10 @@ async def init_app_db(db_conn):
     # SCENES-MP4 D4-T02: provider switch (gemini default) + per-provider voice.
     await _ensure_column(db_conn, "voice_settings", "provider", "TEXT NOT NULL DEFAULT 'gemini'")
     await _ensure_column(db_conn, "voice_settings", "kokoro_voice", "TEXT NOT NULL DEFAULT 'af_heart'")
+    # SCENES-MP4 F1-T02: project canvas background (NULL = channel chroma
+    # default; heals old app.db files idempotently like the voice switch).
+    await _ensure_column(db_conn, "projects", "bg_color_hex", "TEXT")
+    await _ensure_column(db_conn, "channels", "bg_default_hex", "TEXT NOT NULL DEFAULT '#00FF00'")
     await db_conn.commit()
 
 async def _ensure_column(db_conn, table: str, column: str, ddl: str):

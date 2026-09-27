@@ -25,12 +25,29 @@ async def _get_proj_info(project_id: str):
         raise HTTPException(404, "Project not found")
     r = dict(row)
     folder, ch_id = r["folder_name"], r["channel_id"]
-    async with db.execute("SELECT descriptor FROM channels WHERE id=?", (ch_id,)) as cur:
+    async with db.execute("SELECT descriptor, bg_default_hex FROM channels WHERE id=?", (ch_id,)) as cur:
         ch = await cur.fetchone()
     await db.close()
     descriptor = (ch["descriptor"] if ch and ch["descriptor"]
                   else "clean flat 2D animation, bold outlines, limited palette")
     return folder, ch_id, (r.get("name") or folder), descriptor
+
+
+async def _canvas_background_for_handoff(project_id: str) -> dict:
+    """F1-T02: record the effective canvas background for editor keying
+    context. Never fails the handoff — falls back to chroma green."""
+    try:
+        from backend.api.projects import resolve_project_background
+        bg = await resolve_project_background(project_id)
+        return {"bg_color": bg.get("bg_color") or "#00FF00",
+                "channel_chroma": bg.get("channel_chroma") or "#00FF00",
+                "is_default": bool(bg.get("is_default", True)),
+                "note": ("channel default (chroma key "
+                         + (bg.get("channel_chroma") or "#00FF00") + ")")
+                if bg.get("is_default") else "project override (key this color)"}
+    except Exception:
+        return {"bg_color": "#00FF00", "channel_chroma": "#00FF00",
+                "is_default": True, "note": "channel default (chroma key #00FF00)"}
 
 
 def _resolve(ref, lib_by_ref, char_titles, env_titles):
@@ -129,9 +146,11 @@ async def build_handoff(project_id: str):
         })
         clock += b["duration_sec"]
 
+    canvas_bg = await _canvas_background_for_handoff(project_id)
     pkg = {
         "project": pname, "project_id": project_id, "channel_id": ch_id,
         "style_kit": descriptor, "built_at": _now(),
+        "canvas_background": canvas_bg,
         "script": {"version": script["version"], "word_count": script["word_count"],
                    "duration_sec": script["duration_sec"]},
         "stats": {"beats": len(pkg_beats), "duration_sec": total_dur},
@@ -146,6 +165,7 @@ async def build_handoff(project_id: str):
     # ---- human-readable markdown ----
     L = [f"# EPISODE PACKAGE — {pname}", f"Built: {pkg['built_at']}",
          f"STYLE KIT: {descriptor}",
+         f"CANVAS BACKGROUND: {canvas_bg['bg_color']} ({canvas_bg['note']})",
          f"SCRIPT: v{script['version']} · {script['word_count']} words · ~{round(script['duration_sec'] / 60, 1)} min",
          f"BEATS: {len(pkg_beats)} · ~{round(total_dur / 60, 1)} min", "", "## BEATS", ""]
     cur_sec = None

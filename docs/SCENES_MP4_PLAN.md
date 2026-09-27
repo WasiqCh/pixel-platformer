@@ -603,6 +603,42 @@ setting. Never touches planning/approval; worker-only change.
 frame diffs, not eyes); cuts stay cuts everywhere else (concat path untouched,
 no re-encode); render time ≈ baseline.*
 
+### SCATTER BATCH — STEIN-QUALITY SCENES (owner priority 2026-09-27)
+
+Why: the default lines assets up like soldiers; Stein scatters. No asset cap
+(verified: none exists — keep it that way). Placement logic lives in-app
+(`_default_box` + compositor). Four tickets, in order. NOTE (owner ruling):
+no max_tokens changes — 256k-context models read big; output caps are a
+separate knob, untouched.
+
+**S-T01 — Scatter placement (compositor default).**
+Replace bottom-row `_default_box` with seeded scatter: per-beat seed (stable
+across re-renders), region-weighted positions, mixed scales, overlap allowed,
+nothing fully off-canvas, nothing fully covering another asset's face zone.
+Explicit x/y/scale always wins (scatter is the default, never the boss).
+*Acceptance: 10 previews show scattered, non-row layouts; same beat re-renders
+byte-identical (seed stability); explicit placements untouched.*
+
+**S-T02 — Coverage lint + per-beat re-plan (backend + strip hook).**
+After asset planning, a local check (no AI): entities named in the beat vs
+assets planned; thin beats amber-flagged with the reason ("mentions 4 things,
+planned 1"); one-click per-beat re-plan from the flag. Never blocks.
+*Acceptance: a deliberately thin beat flags with a correct reason; re-plan
+from the flag fills it; rich beats stay silent.*
+
+**S-T03 — Overlay recipe guidance (recipe-only).**
+`overlay_text` recipe gains: max 1 plate + 1 badge per beat; muted world +
+1–2 saturated accents palette discipline. No code.
+*Acceptance: 30-scene propose pass obeys the caps; accents sparing on review.*
+
+**S-T04 — Per-asset web-fetch + image upload (backend + Assets page).**
+Every asset gets: regen / retry / paste-code (exists) + NEW fetch-through-web
+(Wikimedia search → pick → attach file, license recorded) + NEW upload image
+(PNG/JPG accepted beside SVG — an asset is not necessarily vector). Manual
+always wins: user file beats AI output, no questions.
+*Acceptance: fetch attaches a licensed file; upload accepts PNG + SVG;
+replaced asset keeps version history; preview shows the real file.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
@@ -664,5 +700,6 @@ Ledger: flipped P_-T__ → ✅/🛑
 | D5+D10-T02 | ✅ | uncommitted | Setup screen (new backend/api/setup.py + S19_Setup.jsx, App.jsx auto-open-once + routed, Sidebar Setup node first): GET /setup/status reuses Inkscape/ffmpeg/Kokoro probes + fresh-import packages + Ollama /api/tags; POST /setup/fix/{id} one button per item (pip/winget/weights-download, PATH refresh, re-probe same probe); live: all-green 5/5, real missing→fix→green loop on packages (sse-starlette uninstall→pip reinstall 3.4.11), other 4 already-ok re-probed green, S19 zero inputs; lint 0 errors (25 warnings: 24 baseline + 1 same-pattern) |
 | D5+D10-T03 | ✅ | uncommitted | Plain-words RenderProgress (scene counts, named-scene errors + Resume) shared by S09 + S16 My Video; GET .../render/finals + GET .../render/file/{name} in render.py (read-only FileResponse pattern); CH03_EP02 4/4 finals play+download byte-identical, layman mapping proven, lint 0 errors, build clean |
 | F1-T01 | ✅ | uncommitted | Style presets (channels.py GET /channels/kit/presets + KitWizard dropdown): 3 listed (wobbly ready v1, flat-toon + paper-cut pending-owner-words stubs with null body, zero invented text); Wobbly served byte-identical from STYLE_WOBBLY_SKETCH.md paragraph (sha 32d06dc9 both sides); picking fills descriptor textarea, Save Kit bumps kit_version, textarea stays editable; new channel CH04 preset→PUT→GET byte-equal, custom edit kept, reverted; lint 0 errors (25 warnings = post-T02 baseline, 0 new) |
+| F1-T02 | ✅ | uncommitted | Project background wheel (projects.py GET/PUT .../background {color} NULL=resets, resolve_project_background NULL→channel chroma; scenes.py _resolve_canvas_bg + bg in hash + X-Background-Color + canvas fill; render frames inherit via scene_preview byte-copy; handoff canvas_background JSON+MD; S09 wheel+reset; asset green auto-white untouched); CH03_EP02 live: red #FF0000 corners (255,0,0) 4257 samples, default #00FF00 corners (0,255,0) 4257, hashes f8d2b8→40a04a bust cached:false→true, bad-color 422, fresh CH03_EP03 default, handoff JSON+MD recorded; lint 0 errors (25 warnings baseline, 0 new) |
 
 `⬜` todo · `🟡` in progress (max one) · `✅` done (acceptance evidenced) · `🛑` blocked (note why).
