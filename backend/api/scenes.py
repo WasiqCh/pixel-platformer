@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from backend.core.config import DATA_DIR
 from backend.core.llm_client import dispatch
 from backend.db.connection import get_app_db, get_project_db
-from backend.models.scene import AssetPlan, ScenePlan
+from backend.models.scene import AssetPlan, OverlayPlan, ScenePlan
 
 router = APIRouter(tags=["scenes"])
 
@@ -482,6 +482,159 @@ async def list_scene_assets(project_id: str):
         rows = [dict(r) for r in await cur.fetchall()]
     await proj_db.close()
     return rows
+
+
+# --- SCENES-MP4 D9-T01: overlay spec (data + AI propose, no rendering) ---
+# Per scene the AI proposes 0+ text overlays (or explicit none = empty list).
+# Re-plan is replace-on-success per beat (P1-T06 precedent): old rows are
+# deleted only after a successful dispatch, so a failed beat keeps its
+# previous items. Manual PUT/DELETE per row always allowed.
+
+_OVERLAY_ROLES = frozenset({"name", "place", "date", "number", "quote", "warning"})
+
+
+class OverlayEdit(BaseModel):
+    text: Optional[str] = None
+    role: Optional[str] = None
+    color: Optional[str] = None
+    position: Optional[str] = None
+    reasoning: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/scenes/overlays/plan")
+async def plan_scene_overlays(project_id: str):
+    try:
+        return await _plan_overlays_inner(project_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Overlay plan crashed: {type(e).__name__}: {e}")
+
+
+async def _plan_overlays_inner(project_id: str):
+    folder, ch_id = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute(
+        "SELECT b.id AS beat_id, b.text AS beat_text, s.place_asset_ref, s.shot, s.reasoning "
+        "FROM scenes s JOIN beats b ON b.id=s.beat_id "
+        "WHERE b.project_id=? ORDER BY b.sort_order", (project_id,)) as cur:
+        scenes = [dict(r) for r in await cur.fetchall()]
+    if not scenes:
+        await proj_db.close()
+        raise HTTPException(400, "Plan scenes first (no scene rows to plan overlays for).")
+
+    planned_scenes, total_overlays, with_overlays = 0, 0, 0
+    failed: list[dict] = []
+    now = _now()
+    for sc in scenes:
+        beat_id = sc["beat_id"]
+        context = {
+            "scene": {"place_ref": sc["place_asset_ref"], "shot": sc["shot"],
+                       "reasoning": sc["reasoning"]},
+            "beat_text": sc["beat_text"],
+        }
+        try:
+            res = await dispatch("overlay_text", context, schema=OverlayPlan,
+                                 project_id=project_id, channel_id=ch_id)
+        except Exception as e:
+            # One scene's crash must not kill the batch (mirrors T05 per-beat guard).
+            failed.append({"beat_id": beat_id,
+                           "error": f"dispatch crashed: {type(e).__name__}: {str(e)[:150]}"})
+            continue
+        if not res["ok"]:
+            failed.append({"beat_id": beat_id, "error": str(res.get("error"))[:200]})
+            continue
+
+        items = (res["parsed"] or {}).get("overlays") or []
+        try:
+            # Replace-on-success: delete this beat's old items only now that the
+            # new plan validated, so re-runs never duplicate and failures keep
+            # the previous items.
+            await proj_db.execute("DELETE FROM scene_overlays WHERE beat_id=?", (beat_id,))
+            for it in items:
+                await proj_db.execute(
+                    "INSERT INTO scene_overlays (beat_id, text, role, color, position, "
+                    "reasoning, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (beat_id, it["text"], it["role"], it["color"], it["position"],
+                     it["reasoning"], now, now))
+            total_overlays += len(items)
+            if items:
+                with_overlays += 1
+            planned_scenes += 1
+        except Exception as e:
+            failed.append({"beat_id": beat_id,
+                           "error": f"store crashed: {type(e).__name__}: {str(e)[:150]}"})
+            continue
+
+    await proj_db.commit()
+    await proj_db.close()
+    return {"planned_scenes": planned_scenes, "total_overlays": total_overlays,
+            "beats_with_overlays": with_overlays,
+            "beats_without_overlays": planned_scenes - with_overlays,
+            "failed": failed, "total_scenes": len(scenes)}
+
+
+@router.get("/projects/{project_id}/scenes/overlays")
+async def list_scene_overlays(project_id: str):
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute(
+        "SELECT so.* FROM scene_overlays so JOIN beats b ON b.id=so.beat_id "
+        "WHERE b.project_id=? ORDER BY b.sort_order, so.id", (project_id,)) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    await proj_db.close()
+    return rows
+
+
+@router.put("/projects/{project_id}/scenes/overlays/{overlay_id}")
+async def edit_scene_overlay(project_id: str, overlay_id: int, data: OverlayEdit):
+    """Manual overlay edit — always allowed (human accepts/fixes per item)."""
+    if data.text is not None and not data.text.strip():
+        raise HTTPException(422, "text must be non-empty (DELETE the row to reject it)")
+    if data.role is not None and data.role.strip().lower() not in _OVERLAY_ROLES:
+        raise HTTPException(422, "role must be one of name|place|date|number|quote|warning")
+    if data.reasoning is not None and not data.reasoning.strip():
+        raise HTTPException(422, "reasoning must be non-empty")
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute(
+        "SELECT so.* FROM scene_overlays so JOIN beats b ON b.id=so.beat_id "
+        "WHERE so.id=? AND b.project_id=?", (overlay_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Overlay not found")
+    row = dict(row)
+    await proj_db.execute(
+        "UPDATE scene_overlays SET text=?, role=?, color=?, position=?, reasoning=?, "
+        "updated_at=? WHERE id=?",
+        (data.text.strip() if data.text is not None else row["text"],
+         data.role.strip().lower() if data.role is not None else row["role"],
+         data.color.strip() if data.color is not None else row["color"],
+         data.position.strip() if data.position is not None else row["position"],
+         data.reasoning.strip() if data.reasoning is not None else row["reasoning"],
+         _now(), overlay_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"status": "saved"}
+
+
+@router.delete("/projects/{project_id}/scenes/overlays/{overlay_id}")
+async def delete_scene_overlay(project_id: str, overlay_id: int):
+    """Manual overlay reject — always allowed (human rejects per item)."""
+    folder, _ = await _get_proj_info(project_id)
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute(
+        "SELECT so.id FROM scene_overlays so JOIN beats b ON b.id=so.beat_id "
+        "WHERE so.id=? AND b.project_id=?", (overlay_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Overlay not found")
+    await proj_db.execute("DELETE FROM scene_overlays WHERE id=?", (overlay_id,))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"status": "deleted"}
 
 
 # --- SCENES-MP4 P3-T01: server-side scene preview (Pillow composite, no new deps) ---

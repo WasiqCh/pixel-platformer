@@ -66,6 +66,43 @@ class AssetPlan(BaseModel):
     needs: list[AssetNeed] = Field(default_factory=list)
 
 
+class OverlayItem(BaseModel):
+    """One on-screen text overlay proposed for a scene (SCENES-MP4 D9-T01).
+    role is the closed set from the overlay_text recipe; color is the plate
+    color for that role (hex like #FFD34D or a plain color name); position is
+    a free-text box hint (e.g. "bottom", "lower-third", "top")."""
+
+    text: str = Field(min_length=1)
+    role: Literal["name", "place", "date", "number", "quote", "warning"]
+    color: str = Field(min_length=1)
+    position: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalise_role(cls, v):
+        return _strip(v).lower() if isinstance(v, str) else v
+
+    @field_validator("text", "color", "position", "reasoning", mode="before")
+    @classmethod
+    def _strip_text(cls, v):
+        return _strip(v)
+
+    @field_validator("reasoning", mode="after")
+    @classmethod
+    def _reasoning_non_empty(cls, v):
+        if not v.strip():
+            raise ValueError("reasoning must be non-empty")
+        return v
+
+
+class OverlayPlan(BaseModel):
+    """overlay_text job output: list wrapper. An empty list IS the explicit
+    none (the beat needs no on-screen text) — not a failure."""
+
+    overlays: list[OverlayItem] = Field(default_factory=list)
+
+
 def _local_tag(tag: str) -> str:
     return tag.split("}")[-1].split(":")[-1].lower() if isinstance(tag, str) else ""
 

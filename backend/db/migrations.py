@@ -302,6 +302,23 @@ CREATE TABLE IF NOT EXISTS render_jobs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 25. scene_overlays (SCENES-MP4 D9-T01: per-scene text-overlay spec, data only).
+-- 0+ rows per beat (feasibility is the AI's judgement; absence = explicit
+-- none). Re-plan is replace-on-success per beat (P1-T06 precedent). Manual
+-- PUT/DELETE per row always allowed. reasoning is non-empty per item (owner
+-- review, same rule as scenes/scene_assets).
+CREATE TABLE IF NOT EXISTS scene_overlays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    beat_id TEXT NOT NULL REFERENCES beats(id),
+    text TEXT NOT NULL,
+    role TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '',
+    position TEXT NOT NULL DEFAULT '',
+    reasoning TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 async def init_app_db(db_conn):
