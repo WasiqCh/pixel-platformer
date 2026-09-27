@@ -576,6 +576,15 @@ blank descriptor again.
 *Acceptance: 3 presets listed; picking Wobbly byte-fills the descriptor; custom
 edits still allowed; new channel can start from a preset.*
 
+**F1-T02 — Project background color (wheel, small).**
+Project-level canvas background: color-wheel input on the project (default =
+channel chroma, green auto-white logic untouched as the default); saved per
+project; compositor + previews + frames read it; preview/frame cache keys gain
+the color (stale art on bg change is a bug); recorded in handoff for editor
+keying context.
+*Acceptance: pick red → previews + frames red; back to default → chroma;
+cache busts on change; fresh projects default correctly.*
+
 **F2-T01 — Batch approve (frontend + existing endpoints, small).**
 "Approve all clean beats" on the Beat Board: beats with zero missing + zero
 clashes approve in one click (existing PUT per beat, sequential, per-beat errors
