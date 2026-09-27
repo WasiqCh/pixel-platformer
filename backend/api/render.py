@@ -39,12 +39,14 @@
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from backend.core.config import DATA_DIR
 from backend.db.connection import get_app_db, get_project_db
@@ -626,6 +628,81 @@ async def render_status(project_id: str):
     task = _TASKS.get(project_id)
     alive = task is not None and not task.done()
     return _job_status_payload(job, alive)
+
+
+# --- SCENES-MP4 D5+D10-T03: My Video output (list + serve versioned finals).
+# Follows the existing FileResponse file-serving pattern (generation image,
+# scenes preview): GET .../render/finals lists 08_handoff/<project>_final[_vN]
+# .mp4 (never overwrite, so the list IS the version history); GET .../render
+# /file/{filename} streams one MP4 for click-to-play + Download. Read-only —
+# no DB writes, no render control, no new tables. Filename is validated
+# against the versioned shape so no path can escape 08_handoff/.
+
+
+def _final_version_key(name: str) -> tuple[int, str]:
+    """Sort key: _final.mp4 first, then _v2, _v3, ... numerically."""
+    m = re.match(r"^.+_final_v(\d+)\.mp4$", name)
+    if m:
+        return (int(m.group(1)), name)
+    return (1, name)
+
+
+def _is_valid_final_name(project_id: str, filename: str) -> bool:
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        return False
+    if filename == f"{project_id}_final.mp4":
+        return True
+    return re.fullmatch(re.escape(project_id) + r"_final_v\d+\.mp4", filename) is not None
+
+
+@router.get("/projects/{project_id}/render/finals")
+async def render_finals(project_id: str):
+    """Versioned finals list for the My Video screen. Reads 08_handoff/
+    only (no DB writes); each entry plays + downloads via .../render/file/."""
+    folder, _ = await _get_proj(project_id)
+    base = Path(DATA_DIR) / "projects" / folder
+    handoff_dir = base / "08_handoff"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    for p in handoff_dir.glob(f"{project_id}_final*.mp4"):
+        if not p.is_file():
+            continue
+        if not _is_valid_final_name(project_id, p.name):
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size == 0:
+            continue
+        files.append({"name": p.name, "rel": f"08_handoff/{p.name}",
+                      "size": st.st_size,
+                      "mtime": datetime.fromtimestamp(
+                          st.st_mtime, tz=timezone.utc).isoformat()})
+    files.sort(key=lambda f: (_final_version_key(f["name"]), f["mtime"]))
+    latest = ""
+    proj_db = await get_project_db(folder)
+    try:
+        job = await _latest_job_row(proj_db, project_id)
+        if job:
+            latest = job.get("output_path") or ""
+    finally:
+        await proj_db.close()
+    return {"project_id": project_id, "finals": files, "latest": latest,
+            "count": len(files)}
+
+
+@router.get("/projects/{project_id}/render/file/{filename}")
+async def render_file(project_id: str, filename: str):
+    """Stream one finished MP4 (click-to-play + Download in My Video).
+    Same FileResponse discipline as the PNG image endpoints."""
+    folder, _ = await _get_proj(project_id)
+    if not _is_valid_final_name(project_id, filename):
+        raise HTTPException(404, "No such video")
+    p = Path(DATA_DIR) / "projects" / folder / "08_handoff" / filename
+    if not p.is_file() or p.stat().st_size == 0:
+        raise HTTPException(404, "No such video")
+    return FileResponse(p, media_type="video/mp4", filename=filename)
 
 
 @router.post("/projects/{project_id}/render/cancel")

@@ -566,6 +566,33 @@ in the same batch (prove via job_log model fields).*
 *Acceptance: palette set on kit → svg context carries it (prove via job_log
 context_pack); generated fills stay inside the palette.*
 
+### F1–F3 — FEEL + SPEED (owner priority 2026-09-27; after D5+D10-T03)
+
+**F1-T01 — Style presets (data + dropdown, tiny).**
+Ship 3 one-click channel presets (Wobbly from `docs/scenes-mp4/STYLE_WOBBLY_SKETCH.md`
++ Flat-toon + Paper-cut, owner words them) as versioned style-kit presets; picking
+one fills the descriptor (+ palette when API-T06 lands). Dawood never faces a
+blank descriptor again.
+*Acceptance: 3 presets listed; picking Wobbly byte-fills the descriptor; custom
+edits still allowed; new channel can start from a preset.*
+
+**F2-T01 — Batch approve (frontend + existing endpoints, small).**
+"Approve all clean beats" on the Beat Board: beats with zero missing + zero
+clashes approve in one click (existing PUT per beat, sequential, per-beat errors
+collected not thrown); human time goes only to the flagged remainder, listed
+with reasons.
+*Acceptance: 30-beat board with 6 problem beats → 24 approve, 6 listed with
+reasons; no silent skips; lint 0 errors.*
+
+**F3-T01 — ffmpeg motion by role (backend render worker, medium, isolated).**
+Pop-in = `fade` on assets/overlays; places = slow zoom-out (1.05→1.0, never
+zoom-in past source — 1080p softens); beats = hard cuts, `xfade` only at
+section turns. Mapping by beat role/framing, subtle by default with an
+intensity setting. Never touches planning/approval; worker-only change.
+*Acceptance: rendered MP4 shows fades on pop-ins + drift on places (prove via
+frame diffs, not eyes); cuts stay cuts elsewhere; render time noted vs -c copy
+baseline.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
@@ -625,6 +652,6 @@ Ledger: flipped P_-T__ → ✅/🛑
 | D9-T03 | ✅ | uncommitted | World Desk as asset source + map honesty (scenes.py only, no schema, no AI job, no frontend): BE-driven photo injection (_ensure_beat_world_assets: MT always honesty row, RW only with Download Desk file, kind=photo insert-default, idempotent insert-if-missing) + MT guard on LLM-need path (MT match → honesty row, never SVG faked map) + POST .../assets/world-sync backfill (no LLM, safe on 107 finals) + compositor pastes world files like any asset (_draw_map_coming_box via shared TTF, X-Map-Count/X-World-Total, cache key gains is_map/world_id); CH03_EP02 live: world-sync 10 MT + 6 RW = 16 photo rows (123 total = 107 final SVG untouched, XOR 0, MT-with-gen 0), B02 RW01 real file (LIB20 green 40770px) + MT01 honesty box (mapfill 329692px) headers Map:1 World:2 Missing:2 Assets:7, re-fetch cached:true same hash, re-sync 0 dupes; RW01 file is synthetic green test PNG (provenance test cc0) — real Download Desk portrait replaces it |
 | D5+D10-T01 | ✅ | uncommitted | Sidebar regroup + purpose hints (frontend-only): nav reordered to real flow script→cast→locations→world→beats→assets→library→checkpoint→myvideo (Sidebar.jsx, ids+labels unchanged); variants/sheets/export under "classic (external art)" divider; hint under every entry (cast "who exists, feeds scenes", sheets "external art only"); new My Video node (S16_MyVideo.jsx placeholder, App.jsx routed+render, full output in T03); backend diff empty; lint 0 errors, build clean |
 | D5+D10-T02 | ✅ | uncommitted | Setup screen (new backend/api/setup.py + S19_Setup.jsx, App.jsx auto-open-once + routed, Sidebar Setup node first): GET /setup/status reuses Inkscape/ffmpeg/Kokoro probes + fresh-import packages + Ollama /api/tags; POST /setup/fix/{id} one button per item (pip/winget/weights-download, PATH refresh, re-probe same probe); live: all-green 5/5, real missing→fix→green loop on packages (sse-starlette uninstall→pip reinstall 3.4.11), other 4 already-ok re-probed green, S19 zero inputs; lint 0 errors (25 warnings: 24 baseline + 1 same-pattern) |
-| D5+D10-T03 | ⬜ | — | Plain-words render + My Video output (not started; reuses existing endpoints only) |
+| D5+D10-T03 | ✅ | uncommitted | Plain-words RenderProgress (scene counts, named-scene errors + Resume) shared by S09 + S16 My Video; GET .../render/finals + GET .../render/file/{name} in render.py (read-only FileResponse pattern); CH03_EP02 4/4 finals play+download byte-identical, layman mapping proven, lint 0 errors, build clean |
 
 `⬜` todo · `🟡` in progress (max one) · `✅` done (acceptance evidenced) · `🛑` blocked (note why).

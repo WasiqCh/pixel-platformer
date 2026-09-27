@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Card from '../components/Card';
 import BlockButton from '../components/BlockButton';
+import RenderProgress from '../components/RenderProgress';
 
 const safeJson = async (res) => {
   const t = await res.text();
@@ -53,10 +54,11 @@ export default function S09_BeatBoard({ currentProject }) {
   const [pipeBusy, setPipeBusy] = useState(null);
   const [pipeMsg, setPipeMsg] = useState('');
   const [svgProg, setSvgProg] = useState(null);
-  const [renderJob, setRenderJob] = useState(null);
-  const [renderMsg, setRenderMsg] = useState('');
-  const [cancelBusy, setCancelBusy] = useState(false);
-  const rowBusy = pipeBusy !== null || !!renderJob?.running;
+  // D5+D10-T03 — plain-words render lives in the shared RenderProgress
+  // component (no jargon, scene counts, named-scene errors + Resume). Its
+  // running flag feeds the row busy lock (no double-fire with ①②③).
+  const [renderRunning, setRenderRunning] = useState(false);
+  const rowBusy = pipeBusy !== null || renderRunning;
 
   const refresh = () => {
     if (currentProject)
@@ -201,51 +203,9 @@ export default function S09_BeatBoard({ currentProject }) {
     } catch (e) { setPipeMsg('Network error: ' + e.message); } finally { setPipeBusy(null); }
   };
 
-  const pollRender = () => {
-    const t = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/v1/projects/${currentProject.id}/render/status`);
-        const s = await safeJson(r);
-        if (!r.ok) return;
-        setRenderJob(s);
-        if (!s.running) {
-          clearInterval(t);
-          if (s.status === 'done') setRenderMsg(`Render done: ${s.current_segment}/${s.total_segments} segments → ${s.output_path}`);
-          else if (s.status === 'cancelled') setRenderMsg(`Render cancelled at ${s.current_segment}/${s.total_segments} — resume with Render`);
-          else if (s.status === 'error') setRenderMsg(`Render error: ${s.error || 'unknown'}`);
-        }
-      } catch { /* keep polling; next tick retries */ }
-    }, 2000);
-  };
-
-  const startRender = async () => {
-    if (rowBusy) return;
-    setRenderMsg('Starting render…');
-    try {
-      const res = await fetch(`/api/v1/projects/${currentProject.id}/render`, { method: 'POST' });
-      const data = await safeJson(res);
-      if (!res.ok) {
-        // 409 carries the gate message verbatim with its fix list — show it as-is.
-        setRenderMsg((res.status === 409 ? '' : `Render failed (${res.status}): `) + (data.detail || data.message || 'Unknown error'));
-        return;
-      }
-      setRenderJob(data);
-      setRenderMsg(`${data.resumed ? 'Resumed' : 'Started'} render job ${data.job_id} at ${data.current_segment}/${data.total_segments} → ${data.output_path || ''}`);
-      pollRender();
-    } catch (e) { setRenderMsg('Network error: ' + e.message); }
-  };
-
-  const cancelRender = async () => {
-    if (cancelBusy) return;
-    setCancelBusy(true);
-    try {
-      const res = await fetch(`/api/v1/projects/${currentProject.id}/render/cancel`, { method: 'POST' });
-      const data = await safeJson(res);
-      if (!res.ok) { setRenderMsg('Cancel failed: ' + (data.detail || 'Unknown error')); return; }
-      setRenderJob(data);
-      setRenderMsg(data.message || `Cancel requested at ${data.current_segment}/${data.total_segments}`);
-    } catch (e) { setRenderMsg('Network error: ' + e.message); } finally { setCancelBusy(false); }
-  };
+  // D5+D10-T03 — render start/poll/cancel + plain-words progress live in
+  // <RenderProgress> below (existing endpoints only). Pipeline row keeps
+  // ①②③ here; ④ render is the shared component (no duplicated logic).
 
   const extract = async () => {
     setLoading(true);
@@ -428,30 +388,12 @@ export default function S09_BeatBoard({ currentProject }) {
               ? `③ Generating ${svgProg.done}/${svgProg.total}…`
               : pipeBusy === 'gen-svg' ? '③ Generating…' : '③ Generate-all SVGs'}
           </BlockButton>
-          <BlockButton onClick={startRender} disabled={rowBusy}>
-            {renderJob?.running ? `④ Rendering ${renderJob.current_segment}/${renderJob.total_segments}…` : '④ Render'}
-          </BlockButton>
-          {renderJob?.running && (
-            <BlockButton variant="danger" onClick={cancelRender} disabled={cancelBusy}>
-              {cancelBusy ? 'Cancelling…' : '⑤ Cancel'}
-            </BlockButton>
-          )}
         </div>
         {pipeMsg && <p className="mt-2 text-xs font-heading text-primary">{pipeMsg}</p>}
-        {renderJob && renderJob.total_segments > 0 && (
-          <div className="mt-2">
-            <div className="w-full h-3 border-2 border-ink rounded bg-panel overflow-hidden">
-              <div
-                className="h-full bg-success"
-                style={{ width: `${Math.round(((renderJob.progress ?? (renderJob.total_segments ? renderJob.current_segment / renderJob.total_segments : 0)) || 0) * 100)}%` }}
-              />
-            </div>
-            <p className="mt-1 text-xs font-mono text-ink/70">
-              {renderJob.current_segment}/{renderJob.total_segments} · {Math.round(((renderJob.progress ?? 0) || 0) * 100)}% · {renderJob.status}{renderJob.output_path ? ` → ${renderJob.output_path}` : ''}
-            </p>
-          </div>
-        )}
-        {renderMsg && <p className="mt-2 text-xs font-heading text-primary">{renderMsg}</p>}
+        <div className="mt-3 pt-3 border-t-2 border-ink/10">
+          <p className="text-xs font-heading font-bold mb-2">④ Your video (plain words — counts are scenes, Resume picks up where it stopped)</p>
+          <RenderProgress currentProject={currentProject} onRunningChange={setRenderRunning} />
+        </div>
       </Card>
 
       {beats.length > 0 && (
