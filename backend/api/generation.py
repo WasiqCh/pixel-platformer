@@ -381,6 +381,75 @@ async def _generate_svg_row(project_id, folder, ch_id, gen_id):
             "version": ver, "reasoning": reasoning}
 
 
+# --- SCENES-MP4 D7-T01: bulk SVG re-generate (sequential, per-row isolation) ---
+# NOTE: registered BEFORE /generate/svg/{gen_id} so the literal 'bulk' is
+# never captured as gen_id (FastAPI matches in registration order).
+# POST /projects/{id}/generate/svg/bulk {only: 'non-final'}: sequential loop
+# over kind='svg' rows not yet final, calling the existing per-row
+# _generate_svg_row (new version each, never overwrite) with per-row crash
+# isolation (one gen's failure lands in its error field / result entry, never
+# kills the batch — mirrors the PNG-lane generate/all shape but stays in the
+# SVG lane, synchronous so the summary returns in the response). No frontend.
+# Optional limit caps rows processed (safe proving on 2-3 rows without
+# blasting the whole base; omitted = all non-final).
+
+_SVG_BULK_RUNNING = {"project": None}
+
+
+class SvgBulkRequest(BaseModel):
+    only: str = "non-final"
+    limit: Optional[int] = None
+
+
+@router.post("/projects/{project_id}/generate/svg/bulk")
+async def bulk_generate_svg(project_id: str, data: SvgBulkRequest):
+    if (data.only or "") != "non-final":
+        raise HTTPException(400, "only must be 'non-final' (previously-final rows stay untouched).")
+    if data.limit is not None and (not isinstance(data.limit, int) or data.limit < 1):
+        raise HTTPException(400, "limit must be a positive integer when given.")
+    if _SVG_BULK_RUNNING["project"]:
+        raise HTTPException(400, "An SVG bulk run is already in progress.")
+    folder, ch_id = await _proj(project_id)
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+            "SELECT id, status FROM generations WHERE project_id=? AND kind='svg' ORDER BY id",
+            (project_id,)) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await proj_db.close()
+    skipped_final = sum(1 for r in rows if r["status"] == "final")
+    targets = [r["id"] for r in rows if r["status"] != "final"]
+    if data.limit is not None:
+        targets = targets[:data.limit]
+    _SVG_BULK_RUNNING["project"] = project_id
+    results: list[dict] = []
+    try:
+        # Sequential await (never gather): one LLM call at a time, same as the
+        # D8-T01 frontend loop but server-side. Each row isolated: any raise
+        # becomes a failed entry, the batch always continues.
+        for gid in targets:
+            try:
+                res = await _generate_svg_row(project_id, folder, ch_id, gid)
+            except HTTPException as e:
+                results.append({"gen_id": gid, "status": "error",
+                                "error": f"HTTP {e.status_code}: {e.detail}"[:300]})
+                continue
+            except Exception as e:
+                results.append({"gen_id": gid, "status": "error",
+                                "error": f"bulk crashed: {type(e).__name__}: {str(e)[:200]}"[:300]})
+                continue
+            results.append(res)
+    finally:
+        _SVG_BULK_RUNNING["project"] = None
+    regenerated = sum(1 for r in results if r.get("status") == "generated")
+    failed = sum(1 for r in results if r.get("status") != "generated")
+    return {"only": "non-final", "processed": len(targets),
+            "regenerated": regenerated, "failed": failed,
+            "skipped_final": skipped_final, "total_svg": len(rows),
+            "results": results}
+
+
 @router.post("/projects/{project_id}/generate/svg/{gen_id}")
 async def generate_svg_one(project_id: str, gen_id: int):
     folder, ch_id = await _proj(project_id)
