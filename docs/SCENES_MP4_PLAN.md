@@ -491,6 +491,40 @@ them like any asset. Map-trigger (MT) records resolve to an honest labelled
 *Acceptance: a beat citing RW01 renders the real file; a beat citing MT01
 renders the honesty box; trace query covers world-sourced assets.*
 
+### D5+D10 — DAWOOD ONBOARDING (owner priority 2026-09-27; combined ticket)
+
+Why: a layman teammate must walk the true road with zero installs by hand and
+zero wrong turns. Sidebar regroup + Setup screen + plain-words render + My Video
+output. Three tickets, in order. Nothing deleted, nothing renamed underneath —
+old flows keep working.
+
+**D5+D10-T01 — Sidebar regroup + purpose hints (frontend-only).**
+Reorder nav to the real flow (Script → Cast/Locations/World → Beats → Assets →
+Library → Checkpoint → My Video); Variants/Sheets/Export move under a "classic
+(external art)" divider; one-line purpose hint under every entry
+("Cast — who exists, feeds scenes" / "Sheets — external art only"); new
+'My Video' node. No route logic changes, no deletions.
+*Acceptance: top-to-bottom click order equals the real pipeline; legacy items
+visually grouped; lint 0 errors.*
+
+**D5+D10-T02 — Setup screen (first-run green ticks + one-click fix).**
+New screen auto-opening when anything is missing. Probes (never typed paths):
+Python packages, Inkscape (existing probe), ffmpeg (existing probe), Kokoro
+deps + weights (D4-T01 findings), Ollama connection. Each missing item gets one
+Fix button (winget for binaries, pip for packages, download for weights to the
+D4-T01 paths or KOKORO_MODEL override). Re-probe after fix, all green to proceed.
+*Acceptance: on a machine missing Inkscape, one click installs it and the tick
+flips green; same for each item; nothing asks for a path.*
+
+**D5+D10-T03 — Plain-words render + My Video output (frontend).**
+Render progress component: "Making your video… 12 of 30 scenes", layman errors
+with the fix attached ("Stopped at scene 14 — [name] failed. Fix it or press
+Resume"), Resume where it stopped (existing cancel/resume endpoints). My Video
+screen: versioned finals list reading `08_handoff/`, click-to-play + Download
+per MP4 (existing file serving pattern). Reuses existing endpoints only.
+*Acceptance: render speaks no jargon; a failed render names its scene + fix;
+finished MP4 plays and downloads from My Video; lint 0 errors.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
