@@ -79,5 +79,14 @@ never from 1. Nothing upstream is disturbed by redoing a downstream step.
 
 View the asset's PNG (Assets page / preview) → say what's wrong in words
 ("thicker outlines", "angrier eyes") → new version arrives, old kept, revert
-anytime. Repeat until liked, then approve. Notes work today; attaching
-reference pictures to the note needs the vision-improve ticket (wired next).
+anytime. You may also PROVIDE reference pictures with your note ("draw the
+eyes like this") — the note + your pictures travel to the model together.
+Repeat until liked, then approve.
+
+## 8. Play mode — step by step with a human gate (owner workflow)
+
+Say "play runbook" with a script and the run goes ONE step at a time from §2:
+the driver (human or model) finishes a step, shows its result, and WAITS.
+Only your explicit "next" starts the following step. Nothing advances on its
+own, nothing batches silently. "Redo step 3" / "skip to render" are always
+valid orders — the gate in §2 decides what's actually ready.
