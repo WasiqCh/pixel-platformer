@@ -457,6 +457,40 @@ from the qwen era), render gate passes, one test MP4 renders clean.
 *Acceptance: 107/107 final with real-model job_log rows; previews 30/30 fresh;
 render check green; MP4 plays. THIS is the "no more placeholders" stamp.*
 
+### D9 — RICH-SCENE ELEMENTS (owner priority 2026-09-27; after D1+D2)
+
+Why: scenes today are actors on a place — no words, no photos, no maps. No
+project becomes a finished explainer video without these. Three tickets, in order.
+
+**D9-T01 — Overlay spec (data + AI propose).**
+New `scene_overlays(beat_id, text, role, color, position, created_at)` table
+(PROJECT_SCHEMA + heal). `overlay_text` already sits in JOB_MAP — verify its
+tier/temp, write `backend/recipes/overlay_text_v1.txt`, and add
+`POST /projects/{id}/scenes/overlays/plan`: per scene, AI proposes 0+ overlay
+items (name/place/date/number/quote/warning roles with colors) or explicit
+none — feasibility is the AI's judgement, human accepts/rejects per item
+(manual PUT always allowed). Pydantic schema with non-empty reasoning.
+*Acceptance: 30 scenes get a mix (not all-yes, not all-no); every proposal
+carries reason + role + color; re-run never duplicates (replace-on-success,
+P1-T06 precedent).*
+
+**D9-T02 — Overlay render (Pillow text, no image model).**
+Compositor (`scene_preview` + P4 frame path — one shared helper, never two
+text renderers): draw each approved overlay as filled plate + bold text +
+outline at its box; role colors from the item, font from a configured TTF
+with a loud fallback (never PIL's bitmap default silently). Cache keys gain
+overlay content (stale art on text change is a bug).
+*Acceptance: preview shows plates pixel-crisp at 1920×1080; changing one
+letter busts the cache; frames match previews; missing font fails loud.*
+
+**D9-T03 — World Desk as asset source (+ map honesty).**
+Asset planning also matches `world_records` (photo/logo/meme kinds with files
+from the Download Desk) as `photo`/`insert`-layer assets; compositor pastes
+them like any asset. Map-trigger (MT) records resolve to an honest labelled
+"map coming" box — never a silent blank, never a faked map.
+*Acceptance: a beat citing RW01 renders the real file; a beat citing MT01
+renders the honesty box; trace query covers world-sourced assets.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
