@@ -335,6 +335,10 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
         # Deferred import: scenes loads llm_client at import time; keep worker
         # startup ordering free. Reuses the exact preview file the GET endpoint
         # serves (no duplicated Pillow logic, no drift).
+        # D9-T02 single-renderer rule: overlay plates are drawn ONLY by
+        # scenes._draw_overlays() via scene_preview() — this worker MUST NOT
+        # grow its own ImageFont/ImageDraw text path (frames match previews
+        # by byte-copy construction).
         from backend.api import scenes as scenes_api
         for i in range(start, total):
             async with proj_db.execute(

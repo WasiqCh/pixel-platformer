@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -725,7 +726,9 @@ def _paste_fit(canvas, img, box: tuple[int, int, int, int]) -> None:
 def _draw_labelled_box(canvas, box: tuple[int, int, int, int],
                        title: str, reason: str) -> None:
     """Honest missing-asset box: filled + red border + two centered lines.
-    Called for EVERY unresolvable asset — never leave a silent blank."""
+    Called for EVERY unresolvable asset — never leave a silent blank.
+    Uses the ONE shared TTF helper (_overlay_font) — never PIL's bitmap
+    default silently (D9-T02 single-renderer rule)."""
     from PIL import ImageDraw as _Draw
 
     bx, by, bw, bh = (int(v) for v in box)
@@ -734,15 +737,168 @@ def _draw_labelled_box(canvas, box: tuple[int, int, int, int],
                 fill=_MISSING_FILL, outline=_MISSING_EDGE, width=4)
     line1 = f"MISSING: {(title or 'asset')[:30]}"
     line2 = (reason or "no file")[:46]
-    # Default bitmap font — no new dependency, always available.
-    b1 = d.textbbox((0, 0), line1)
-    b2 = d.textbbox((0, 0), line2)
+    font = _overlay_font(28)
+    b1 = d.textbbox((0, 0), line1, font=font)
+    b2 = d.textbbox((0, 0), line2, font=font)
     t1w, t1h = b1[2] - b1[0], b1[3] - b1[1]
     t2w, t2h = b2[2] - b2[0], b2[3] - b2[1]
     cx = bx + bw // 2
     cy = by + bh // 2
-    d.text((cx - t1w // 2, cy - t1h - 2), line1, fill=(255, 255, 255))
-    d.text((cx - t2w // 2, cy + 2), line2, fill=(255, 220, 120))
+    d.text((cx - t1w // 2, cy - t1h - 2), line1, font=font, fill=(255, 255, 255),
+           stroke_width=1, stroke_fill=(0, 0, 0))
+    d.text((cx - t2w // 2, cy + 2), line2, font=font, fill=(255, 220, 120),
+           stroke_width=1, stroke_fill=(0, 0, 0))
+
+
+# --- SCENES-MP4 D9-T02: overlay render (Pillow text, no image model) ---
+# SINGLE-RENDERER RULE (locked): scene_preview + the P4 frame path share ONE
+# Pillow text helper — _draw_overlays() below. render.py reuses
+# scenes.scene_preview() + byte-copies the PNG (_write_beat_frames), so it
+# must NEVER grow its own ImageFont/ImageDraw text path. Role colors come
+# from the item's color field (recipe plate color); the font is a real TTF
+# via _probe_overlay_font() with a LOUD failure (never PIL's bitmap default
+# silently). Overlay content lives in the preview cache key — a one-letter
+# text change MUST bust the cache (stale art on text change is a bug).
+
+_OVERLAY_FONT_ENV = "OVERLAY_FONT_PATH"
+# Bold-first: plates + missing boxes + beat tag all want bold for crispness.
+_OVERLAY_FONT_CANDIDATES = (
+    r"C:\Windows\Fonts\arialbd.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+    r"C:\Windows\Fonts\segoeuib.ttf",
+    r"C:\Windows\Fonts\segoeui.ttf",
+)
+_OVERLAY_FONT_SIZE = 44
+_OVERLAY_PAD_X = 28
+_OVERLAY_PAD_Y = 16
+_OVERLAY_MARGIN = 36
+_OVERLAY_TOP_CLEAR = 70  # clears the beat tag at (10,10) so top plates stay visible
+_OVERLAY_GAP = 12
+
+
+def _probe_overlay_font() -> tuple[str, str, list[str]]:
+    """Probe for a real TTF for overlay plates. Returns (path, source, tried).
+
+    Order: OVERLAY_FONT_PATH env -> well-known system bold/regular fonts.
+    tried lists every location checked (Inkscape/ffmpeg probe discipline).
+    Raises FileNotFoundError naming every location tried when not found —
+    callers surface it as a loud 500, NEVER fall back to bitmap silently.
+    """
+    tried: list[str] = []
+    env = (os.environ.get(_OVERLAY_FONT_ENV) or "").strip().strip('"')
+    if env:
+        tried.append(f"{_OVERLAY_FONT_ENV}={env}")
+        if os.path.isfile(env):
+            return env, "env", tried
+        tried.append(f"{_OVERLAY_FONT_ENV} missing on disk: {env}")
+    else:
+        tried.append(f"{_OVERLAY_FONT_ENV}=(unset)")
+    for cand in _OVERLAY_FONT_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand, "system", tried + [f"system:{cand}=found"]
+        tried.append(f"system:{cand}=missing")
+    raise FileNotFoundError(
+        "Overlay font not found. Tried: " + " | ".join(tried))
+
+
+def _overlay_font(size: int):
+    """Load the shared TTF at a size. Fails LOUD (FileNotFoundError with the
+    tried list) — never ImageFont.load_default() silently."""
+    from PIL import ImageFont as _Font
+
+    path, _source, _tried = _probe_overlay_font()
+    try:
+        return _Font.truetype(path, size)
+    except Exception as e:
+        raise RuntimeError(
+            f"Overlay font unreadable ({path}): {type(e).__name__}: {e}")
+
+
+def _parse_plate_color(s: str) -> tuple[int, int, int]:
+    """Role color FROM THE ITEM (recipe plate color). Accepts #RRGGBB / #RGB /
+    PIL color names; invalid values fall back to white so one bad row never
+    kills the preview (the text still renders — honest, not blank)."""
+    raw = (s or "").strip()
+    if raw.startswith("#"):
+        h = raw[1:].strip()
+        if len(h) == 3 and all(c in "0123456789abcdefABCDEF" for c in h):
+            return (int(h[0] * 2, 16), int(h[1] * 2, 16), int(h[2] * 2, 16))
+        if len(h) == 6 and all(c in "0123456789abcdefABCDEF" for c in h):
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    try:
+        from PIL import ImageColor as _Color
+        return tuple(_Color.getrgb(raw))[:3]  # type: ignore[return-value]
+    except Exception:
+        return (255, 255, 255)
+
+
+def _overlay_text_colors(plate: tuple[int, int, int]) -> tuple[tuple, tuple]:
+    """Contrast pair for crisp text on the plate: dark text + white outline
+    on light plates, white text + black outline on dark plates."""
+    lum = 0.299 * plate[0] + 0.587 * plate[1] + 0.114 * plate[2]
+    if lum > 150:
+        return ((20, 20, 20), (255, 255, 255))
+    return ((255, 255, 255), (0, 0, 0))
+
+
+def _draw_overlays(canvas, overlays: list[dict]) -> None:
+    """THE shared Pillow text renderer (D9-T02). Draws each overlay as a
+    filled plate (role color from the item) + bold TTF text + outline at its
+    box. Used by scene_preview; the P4 frame path reuses scene_preview, so
+    this is the ONLY text renderer — never add a second one."""
+    from PIL import ImageDraw as _Draw
+
+    if not overlays:
+        return
+    d = _Draw.Draw(canvas)
+    max_w = _PRE_W - _OVERLAY_MARGIN * 2
+    # Separate vertical cursors per zone so mixed positions never overlap.
+    top_cur = _OVERLAY_TOP_CLEAR
+    low_cur = int(_PRE_H * 0.70)
+    bot_cur = _PRE_H - _OVERLAY_MARGIN
+    for ov in overlays:
+        text = (ov.get("text") or "").strip()
+        if not text:
+            continue
+        pos = (ov.get("position") or "lower-third").strip().lower()
+        if pos not in ("top", "bottom", "lower-third", "top-left", "top-right"):
+            pos = "lower-third"
+        plate = _parse_plate_color(ov.get("color") or "")
+        fg, stroke = _overlay_text_colors(plate)
+        size = _OVERLAY_FONT_SIZE
+        font = _overlay_font(size)
+        # Shrink-to-fit so long quotes stay pixel-crisp inside 1920×1080.
+        while size > 20:
+            bb = d.textbbox((0, 0), text, font=font)
+            if (bb[2] - bb[0]) + _OVERLAY_PAD_X * 2 <= max_w:
+                break
+            size -= 4
+            font = _overlay_font(size)
+        bb = d.textbbox((0, 0), text, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        pw, ph = tw + _OVERLAY_PAD_X * 2, th + _OVERLAY_PAD_Y * 2
+        pw = min(pw, max_w)
+        if pos in ("top", "top-left", "top-right"):
+            y = top_cur
+            top_cur += ph + _OVERLAY_GAP
+        elif pos == "bottom":
+            bot_cur -= ph
+            y = bot_cur
+            bot_cur -= _OVERLAY_GAP
+        else:  # lower-third (default for names)
+            y = low_cur
+            low_cur += ph + _OVERLAY_GAP
+        if pos in ("top", "bottom", "lower-third"):
+            x = (_PRE_W - pw) // 2
+        elif pos == "top-left":
+            x = _OVERLAY_MARGIN
+        else:  # top-right
+            x = _PRE_W - pw - _OVERLAY_MARGIN
+        x = min(max(int(x), 2), _PRE_W - pw - 2)
+        y = min(max(int(y), 2), _PRE_H - ph - 2)
+        d.rectangle([x, y, x + pw, y + ph], fill=plate, outline=(0, 0, 0), width=3)
+        d.text((x + _OVERLAY_PAD_X, y + _OVERLAY_PAD_Y), text, font=font,
+               fill=fg, stroke_width=2, stroke_fill=stroke)
 
 
 def _file_hash(p: Path) -> str:
@@ -786,6 +942,11 @@ async def scene_preview(project_id: str, beat_id: str):
                 "SELECT id, asset_ref, title, file_path, status FROM library WHERE project_id=?",
                 (project_id,)) as cur:
             lib_rows = [dict(r) for r in await cur.fetchall()]
+        async with proj_db.execute(
+                "SELECT id, text, role, color, position FROM scene_overlays "
+                "WHERE beat_id=? ORDER BY id",
+                (beat_id,)) as cur:
+            overlay_rows = [dict(r) for r in await cur.fetchall()]
     finally:
         await proj_db.close()
 
@@ -885,7 +1046,8 @@ async def scene_preview(project_id: str, beat_id: str):
 
     items.sort(key=lambda it: (_LAYER_RANK.get(it["layer"], 1), it["need"]["id"]))
 
-    # --- scene-hash cache key ---
+    # --- scene-hash cache key (D9-T02: overlay CONTENT is part of the key —
+    # a one-letter text change MUST bust the cache; stale art is a bug) ---
     canon = {
         "beat_id": beat_id,
         "place_asset_ref": place_ref,
@@ -907,6 +1069,11 @@ async def scene_preview(project_id: str, beat_id: str):
         ],
         "place": {"rel": place_rel, "fhash": _file_hash(place_path) if place_path else "",
                   "reason": place_reason},
+        "overlays": [
+            {"id": o["id"], "text": o.get("text") or "", "role": o.get("role") or "",
+             "color": o.get("color") or "", "position": o.get("position") or ""}
+            for o in overlay_rows
+        ],
     }
     full_hash = hashlib.sha256(
         json.dumps(canon, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -921,9 +1088,17 @@ async def scene_preview(project_id: str, beat_id: str):
             dest, media_type="image/png",
             headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "true",
                      "X-Missing-Count": str(missing),
-                     "X-Assets-Total": str(len(items) + 1)})
+                     "X-Assets-Total": str(len(items) + 1),
+                     "X-Overlays-Total": str(len(overlay_rows))})
 
     # --- render ---
+    # Fail fast LOUD when no TTF is available (never silent bitmap): probe
+    # once before any text is drawn so missing-asset boxes, the beat tag,
+    # and overlay plates all share the same fate.
+    try:
+        _probe_overlay_font()
+    except FileNotFoundError as e:
+        raise HTTPException(500, f"Overlay font missing (loud fallback): {e}")
     canvas = _Image.new("RGB", (_PRE_W, _PRE_H), _PRE_BG)
     if place_path is not None:
         try:
@@ -967,17 +1142,31 @@ async def scene_preview(project_id: str, beat_id: str):
                            it["need"]["name"] or "asset", it["reason"])
 
     # Beat tag (top-left) so the PNG is traceable without its filename.
+    # Uses the ONE shared TTF helper (never bitmap silently); top overlay
+    # plates start below it (_OVERLAY_TOP_CLEAR) so both stay visible.
+    try:
+        tag_font = _overlay_font(28)
+    except (FileNotFoundError, RuntimeError) as e:
+        raise HTTPException(500, f"Overlay font missing (loud fallback): {e}")
     d = _Draw.Draw(canvas)
     tag = f"{beat_id} — {(scene.get('shot') or '')[:90]}"
-    tb = d.textbbox((0, 0), tag)
+    tb = d.textbbox((0, 0), tag, font=tag_font)
     pad = 8
     d.rectangle([10, 10, 10 + (tb[2] - tb[0]) + pad * 2,
                  10 + (tb[3] - tb[1]) + pad * 2], fill=(0, 0, 0))
-    d.text((10 + pad, 10 + pad), tag, fill=(255, 255, 255))
+    d.text((10 + pad, 10 + pad), tag, font=tag_font, fill=(255, 255, 255))
+
+    # D9-T02 overlays on top of art, under nothing (beat tag already drawn
+    # above is small; top plates clear it via _OVERLAY_TOP_CLEAR).
+    try:
+        _draw_overlays(canvas, overlay_rows)
+    except (FileNotFoundError, RuntimeError) as e:
+        raise HTTPException(500, f"Overlay font missing (loud fallback): {e}")
 
     canvas.save(dest, "PNG")
     return FileResponse(
         dest, media_type="image/png",
         headers={"X-Scene-Hash": full_hash, "X-Preview-Cached": "false",
                  "X-Missing-Count": str(missing),
-                 "X-Assets-Total": str(len(items) + 1)})
+                 "X-Assets-Total": str(len(items) + 1),
+                 "X-Overlays-Total": str(len(overlay_rows))})
