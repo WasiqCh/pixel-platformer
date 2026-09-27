@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import random
 import re
 from pathlib import Path
 from typing import Optional
@@ -992,7 +993,11 @@ def _framing_scale(framing: str, kind: str) -> float:
 
 def _default_box(i: int, n: int, framing: str, kind: str) -> tuple[float, float, float]:
     """Deterministic default box (fractions). Single asset centers; rows of
-    2+ spread left-to-right, bottom-anchored so boxes never fully overlap."""
+    2+ spread left-to-right, bottom-anchored so boxes never fully overlap.
+
+    LEGACY (pre S-T01): kept for reference only — the live compositor default
+    is now the seeded scatter below (_scatter_default). Do not call for new
+    previews; do not delete (additive-only rule)."""
     scale = _framing_scale(framing, kind)
     # A lone place/photo is an establishing view — let it read large.
     if n == 1 and (kind or "").lower() in ("place", "photo"):
@@ -1008,6 +1013,113 @@ def _default_box(i: int, n: int, framing: str, kind: str) -> tuple[float, float,
         x = min(max(float(x), 0.0), max(1.0 - scale, 0.0))
         y = min(max(float(y), 0.02), max(1.0 - scale, 0.02))
     return float(x), float(y), float(scale)
+
+
+# --- SCENES-MP4 S-T01: seeded scatter default (Stein-quality, compositor only) ---
+# Replaces bottom-row _default_box as the live default. Per-beat seed => stable
+# re-renders (same beat => byte-identical PNG). Region-weighted positions +
+# mixed scales, overlap allowed, nothing fully off-canvas, nothing fully
+# covering another asset's face zone. Explicit x/y/scale always wins — scatter
+# is the default, never the boss (the face-guard never moves explicit boxes).
+# No new dependency (random + hashlib are stdlib); single-renderer rule kept
+# (render.py reuses scene_preview, so frames inherit scatter automatically).
+
+# ((x0,x1),(y0,y1),weight) in 0-1 fractions; weights sum to 100.
+_SCATTER_REGIONS: tuple = (
+    ((0.30, 0.62), (0.30, 0.58), 30),  # center
+    ((0.04, 0.28), (0.30, 0.68), 20),  # left-mid
+    ((0.68, 0.92), (0.30, 0.68), 20),  # right-mid
+    ((0.18, 0.72), (0.04, 0.26), 15),  # upper
+    ((0.18, 0.72), (0.66, 0.88), 15),  # lower
+)
+_SCATTER_JITTER_LO = 0.85
+_SCATTER_JITTER_HI = 1.20
+
+
+def _beat_seed(beat_id: str) -> int:
+    """Stable per-beat seed (sha256 hex -> int). Never Python hash() (salted)."""
+    return int(hashlib.sha256((beat_id or "").encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _scatter_default(beat_id: str, idx: int, framing: str, kind: str) -> tuple[float, float, float]:
+    """Seeded scatter box (fractions). Deterministic in (beat_id, idx, framing,
+    kind) — independent of sibling count so adding an asset never reshuffles
+    existing ones. Overlap allowed by design; on-canvas guaranteed by clamp."""
+    rng = random.Random((_beat_seed(beat_id) ^ (idx * 0x9E3779B1 + 0x85EBCA6B)) & 0xFFFFFFFF)
+    base = _framing_scale(framing, kind)
+    scale = float(base) * rng.uniform(_SCATTER_JITTER_LO, _SCATTER_JITTER_HI)
+    scale = min(max(scale, 0.05), 1.0)
+    total = sum(w for _, _, w in _SCATTER_REGIONS)
+    pick = rng.random() * total
+    acc = 0.0
+    region = _SCATTER_REGIONS[0]
+    for reg in _SCATTER_REGIONS:
+        acc += reg[2]
+        if pick < acc:
+            region = reg
+            break
+    (rx0, rx1), (ry0, ry1), _w = region
+    x = rng.uniform(min(rx0, rx1), max(rx0, rx1))
+    y = rng.uniform(min(ry0, ry1), max(ry0, ry1))
+    x = min(max(float(x), 0.0), max(1.0 - scale, 0.0))
+    y = min(max(float(y), 0.0), max(1.0 - scale, 0.0))
+    return float(x), float(y), float(scale)
+
+
+def _face_zone_px(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Face zone: top-center 40% wide x top 25% tall of the asset box."""
+    bx, by, bw, bh = box
+    return (int(bx + bw * 0.30), int(by), int(max(bw * 0.40, 1)), int(max(bh * 0.25, 1)))
+
+
+def _rect_covers(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]) -> bool:
+    ox, oy, ow, oh = outer
+    ix, iy, iw, ih = inner
+    return (ox <= ix and oy <= iy and ox + ow >= ix + iw and oy + oh >= iy + ih)
+
+
+def _scatter_deconflict(items: list[dict]) -> None:
+    """Nudge scattered coverers off full face coverage, in place.
+
+    For every pair (coverer C, victim V != C): if C's pixel box fully contains
+    V's face zone, and C is movable (fully scattered — zero explicit coords),
+    walk C by prime strides (+173,+149)px wrapping inside the canvas until it
+    no longer covers THAT victim (max 60 steps), then continue. Up to 30 outer
+    sweeps so chained pairs converge; deterministic, no RNG. Explicit boxes
+    (any valid x/y/scale hint) NEVER move — explicit always wins, scatter is
+    never the boss. Partial overlap stays allowed; only FULL face coverage is
+    repaired."""
+    for _ in range(30):
+        boxes = []
+        for it in items:
+            bw, bh = int(it["scale"] * _PRE_W), int(it["scale"] * _PRE_H)
+            bx, by = int(it["x"] * _PRE_W), int(it["y"] * _PRE_H)
+            bx = min(max(bx, 0), max(_PRE_W - bw, 0))
+            by = min(max(by, 0), max(_PRE_H - bh, 0))
+            boxes.append([bx, by, bw, bh])
+        moved = False
+        for ci, c in enumerate(items):
+            if not c.get("scatter_movable", True):
+                continue
+            bw, bh = boxes[ci][2], boxes[ci][3]
+            span_x = max(_PRE_W - bw, 1)
+            span_y = max(_PRE_H - bh, 1)
+            for vi, v in enumerate(items):
+                if vi == ci:
+                    continue
+                for _step in range(60):
+                    cb = (boxes[ci][0], boxes[ci][1], bw, bh)
+                    vb = (boxes[vi][0], boxes[vi][1], boxes[vi][2], boxes[vi][3])
+                    if not _rect_covers(cb, _face_zone_px(vb)):
+                        break
+                    boxes[ci][0] = (boxes[ci][0] + 173) % span_x
+                    boxes[ci][1] = (boxes[ci][1] + 149) % span_y
+                    moved = True
+        for it, b in zip(items, boxes):
+            it["x"] = min(max(b[0] / _PRE_W, 0.0), max(1.0 - it["scale"], 0.0))
+            it["y"] = min(max(b[1] / _PRE_H, 0.0), max(1.0 - it["scale"], 0.0))
+        if not moved:
+            break
 
 
 def _paste_fit(canvas, img, box: tuple[int, int, int, int]) -> None:
@@ -1326,7 +1438,12 @@ async def scene_preview(project_id: str, beat_id: str):
             lib is not None and (lib.get("asset_ref") or "").startswith(("RW", "MT")))
         framing_eff = (hint.get("framing") if hint else "") or (
             "wide" if kind in ("place", "photo") else "medium")
-        dx, dy, ds = _default_box(idx, max(len(needs), 1), framing_eff, kind)
+        # S-T01: seeded scatter is the live default (replaces bottom-row
+        # _default_box). Explicit x/y/scale always wins — scatter never bosses.
+        dx, dy, ds = _scatter_default(beat_id, idx, framing_eff, kind)
+        has_explicit = bool(hint and (
+            _valid_frac(hint.get("x")) or _valid_frac(hint.get("y"))
+            or _valid_frac(hint.get("scale"))))
         x = float(hint["x"]) if hint and _valid_frac(hint.get("x")) else dx
         y = float(hint["y"]) if hint and _valid_frac(hint.get("y")) else dy
         s = float(hint["scale"]) if hint and _valid_frac(hint.get("scale")) else ds
@@ -1386,7 +1503,12 @@ async def scene_preview(project_id: str, beat_id: str):
                       "x": x, "y": y, "scale": s, "layer": layer,
                       "path": path, "rel": rel, "reason": reason, "fhash": fhash,
                       "is_map": bool(is_map),
+                      "scatter_movable": not has_explicit,
                       "world_id": ((lib.get("asset_ref") or "") if lib else "")})
+    # S-T01 face-guard: repair full face coverage among scattered defaults only
+    # (explicit boxes never move). Runs BEFORE the scene-hash so the guard is
+    # part of the cached layout — same beat => byte-identical re-render.
+    _scatter_deconflict(items)
     items.sort(key=lambda it: (_LAYER_RANK.get(it["layer"], 1), it["need"]["id"]))
 
     # F1-T02: effective canvas background (project override or channel
