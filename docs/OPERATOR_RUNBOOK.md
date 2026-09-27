@@ -67,3 +67,17 @@ Key endpoints (all `POST` unless noted):
 - Never overwrite: versions only, revert anytime.
 - Approved rows are skipped by re-runs (re-plan replaces drafts, keeps approvals).
 - Dawood's machine is independent: fresh `data/`, his own settings, same runbook.
+
+## 6. Redo any single step (owner workflow)
+
+Any stage re-fires on demand — say "re-extract characters", "re-plan scenes",
+"redraw asset X". Re-runs replace drafts, keep approvals, never duplicate
+(bulk loops are idempotent; renders mint new versions). Render resumes at N,
+never from 1. Nothing upstream is disturbed by redoing a downstream step.
+
+## 7. Iterate any asset until liked (owner workflow)
+
+View the asset's PNG (Assets page / preview) → say what's wrong in words
+("thicker outlines", "angrier eyes") → new version arrives, old kept, revert
+anytime. Repeat until liked, then approve. Notes work today; attaching
+reference pictures to the note needs the vision-improve ticket (wired next).
