@@ -3,6 +3,7 @@ import asyncio
 import base64
 import glob as _glob
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -277,8 +278,14 @@ async def _svg_asset_info(proj_db, row: dict, gen_id: int) -> tuple[str, str, st
 
     Prefers the linked scene_assets need (validated kind + search_query);
     falls back to the generation prompt. Returns (kind, desc, name).
+
+    SCENES-MP4 I-T01: for needs matched to a character/environment, appends
+    its extracted identity (characters.appearance / environments.elements)
+    into the description server-side. No recipe change (description key
+    already exists). Unmatched/generic needs stay byte-identical.
     """
     asset_kind, asset_desc = "prop", row["prompt"] or row["title"] or ""
+    need_name, need_query = "", ""
     try:
         async with proj_db.execute(
                 "SELECT kind, search_query, name, reasoning FROM scene_assets WHERE generation_id=?",
@@ -294,10 +301,113 @@ async def _svg_asset_info(proj_db, row: dict, gen_id: int) -> tuple[str, str, st
             if row["prompt"]:
                 bits.append(f"— {row['prompt']}")
             asset_desc = " ".join(b for b in bits if b)
+            need_name = need.get("name") or ""
+            need_query = need.get("search_query") or ""
+    except Exception:
+        pass
+    # I-T01 identity append (character -> appearance, place -> elements).
+    # Generic kinds (prop/photo) skip entirely -> byte-identical. Matched
+    # kinds with no record match or empty identity also stay identical.
+    # Every failure falls through silently (never break the draw call).
+    try:
+        if asset_kind in ("character", "place") and (need_name or need_query):
+            project_id = row.get("project_id")
+            if project_id:
+                if asset_kind == "character":
+                    async with proj_db.execute(
+                            "SELECT names, appearance FROM characters "
+                            "WHERE project_id=? AND stale=0 ORDER BY id",
+                            (project_id,)) as cur:
+                        chars = [dict(r) for r in await cur.fetchall()]
+                    for ch in chars:
+                        try:
+                            aliases = json.loads(ch.get("names") or "[]")
+                        except Exception:
+                            aliases = []
+                        if not isinstance(aliases, list):
+                            aliases = [aliases]
+                        hit = any(
+                            _identity_entry_matches(need_name, need_query, str(a or ""))
+                            for a in aliases if str(a or "").strip()
+                        )
+                        if hit:
+                            appearance = (ch.get("appearance") or "").strip()
+                            if appearance:
+                                asset_desc = (
+                                    f"{asset_desc} Identity (locked appearance — "
+                                    f"draw exactly, do not redesign): {appearance}"
+                                )
+                            break
+                else:  # place -> environments.elements
+                    async with proj_db.execute(
+                            "SELECT name, elements FROM environments "
+                            "WHERE project_id=? AND stale=0 ORDER BY id",
+                            (project_id,)) as cur:
+                        envs = [dict(r) for r in await cur.fetchall()]
+                    for env in envs:
+                        env_name = env.get("name") or ""
+                        if not _identity_entry_matches(need_name, need_query, env_name):
+                            continue
+                        try:
+                            elems = json.loads(env.get("elements") or "[]")
+                        except Exception:
+                            elems = []
+                        if isinstance(elems, str):
+                            elems = [elems]
+                        elems = [str(e).strip() for e in (elems or []) if str(e or "").strip()]
+                        if elems:
+                            asset_desc = (
+                                f"{asset_desc} Identity (locked elements — "
+                                f"draw exactly, do not redesign): {'; '.join(elems)}"
+                            )
+                        break
     except Exception:
         pass
     asset_name = row["title"] or row["gen_label"] or f"gen{gen_id}"
     return asset_kind, asset_desc, asset_name
+
+
+# --- SCENES-MP4 I-T01: identity matching (mirrors scenes._entry_matches) ---
+# Same discipline as the library-match path so identity agrees with the rest
+# of asset planning: exact -> substring (len>=4) -> sig-token subset -> >=2
+# token overlap. Local copy (not an import) to keep generation.py
+# self-contained; scenes.py owns the canonical version.
+
+_IDENTITY_STOPWORDS = frozenset(
+    "a an the of and or in on at to for with from by as is are was were be been "
+    "this that these those its it s".split()
+)
+
+
+def _identity_norm(s: str) -> str:
+    return re.sub(r"[^\w]+", " ", (s or "").lower(), flags=re.UNICODE).strip()
+
+
+def _identity_sig_tokens(s: str) -> list[str]:
+    return [t for t in _identity_norm(s).split() if t not in _IDENTITY_STOPWORDS and len(t) > 1]
+
+
+def _identity_entry_matches(need_name: str, search_query: str, candidate: str) -> bool:
+    n_name, n_query, n_cand = (
+        _identity_norm(need_name), _identity_norm(search_query), _identity_norm(candidate))
+    if not n_cand or (not n_name and not n_query):
+        return False
+    if n_name and n_name == n_cand:
+        return True
+    if n_query and n_query == n_cand:
+        return True
+    if n_name and len(n_name) >= 4 and (n_name in n_cand or n_cand in n_name):
+        return True
+    if n_query and len(n_query) >= 4 and (n_query in n_cand or n_cand in n_query):
+        return True
+    t_cand = set(n_cand.split())
+    for sig in (_identity_sig_tokens(need_name), _identity_sig_tokens(search_query)):
+        if sig and set(sig) <= t_cand:
+            return True
+    need_toks = set(_identity_sig_tokens(need_name)) | set(_identity_sig_tokens(search_query))
+    if len(need_toks & t_cand) >= 2:
+        return True
+    return False
 
 
 def _list_svg_versions(svg_dir, base: str) -> list[int]:
