@@ -46,6 +46,11 @@ export default function S09_BeatBoard({ currentProject }) {
   const [fixDraft, setFixDraft] = useState('');
   const [sceneMsg, setSceneMsg] = useState({});
   const [previewDead, setPreviewDead] = useState({});
+  // S-T02: coverage lint (backend, no AI) — thin beats get an amber flag
+  // with the reason ("mentions 4 things, planned 1") + a one-click per-beat
+  // re-plan (POST .../assets/plan?beat_id=...). Advisory only, never blocks
+  // approve/batch/render. Rich beats stay silent (no entry rendered).
+  const [coverage, setCoverage] = useState({});
   // D8-T01: pipeline button row (frontend-only, existing endpoints in click order).
   // ① plan scenes → ② plan assets → ③ per-row POST generate/svg/{gen_id}
   // (never POST generate/all: PNG lane, 400s svg rows) → ④ render + poll
@@ -125,6 +130,13 @@ export default function S09_BeatBoard({ currentProject }) {
         (Array.isArray(rows) ? rows : []).forEach(a => { (m[a.beat_id] = m[a.beat_id] || []).push(a); });
         setSceneAssets(m);
       }).catch(() => {});
+    fetch(`/api/v1/projects/${currentProject.id}/scenes/coverage`)
+      .then(r => r.json())
+      .then(d => {
+        const m = {};
+        (Array.isArray(d?.beats) ? d.beats : []).forEach(b => { m[b.beat_id] = b; });
+        setCoverage(m);
+      }).catch(() => {});
   };
   useEffect(refreshScenes, [currentProject]);
 
@@ -141,6 +153,20 @@ export default function S09_BeatBoard({ currentProject }) {
       if (!res.ok) { sayScene(beatId, 'Approve failed: ' + (data.detail || 'Unknown error')); return; }
       setScenes(s => ({ ...s, [beatId]: { ...s[beatId], status: 'approved' } }));
       sayScene(beatId, '✓ scene approved (1 click)');
+    } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
+  };
+
+  const replanBeatAssets = async (beatId) => {
+    if (sceneBusy) return;
+    setSceneBusy(beatId);
+    sayScene(beatId, 'Re-planning this beat…');
+    try {
+      const res = await fetch(`/api/v1/projects/${currentProject.id}/scenes/assets/plan?beat_id=${encodeURIComponent(beatId)}`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!res.ok) { sayScene(beatId, 'Re-plan failed: ' + (data.detail || 'Unknown error')); return; }
+      const failedN = Array.isArray(data.failed) ? data.failed.length : (data.failed || 0);
+      sayScene(beatId, `✓ re-planned ${beatId}: ${data.total_needs ?? 0} needs = ${data.matched ?? 0} matched + ${data.to_generate ?? 0} to-generate, ${failedN} failed`);
+      refreshScenes();
     } catch (e) { sayScene(beatId, 'Network error: ' + e.message); } finally { setSceneBusy(null); }
   };
 
@@ -702,6 +728,14 @@ export default function S09_BeatBoard({ currentProject }) {
                         </span>
                         <span className="text-ink/50 font-mono">{(sceneAssets[b.id] || []).length} assets</span>
                       </div>
+                      {coverage[b.id]?.thin && (
+                        <div className="mt-2 p-2 border-2 border-warn bg-warn/10 rounded flex items-center gap-2 flex-wrap text-xs">
+                          <span className="font-bold text-ink">⚠️ thin — {coverage[b.id].reason}</span>
+                          <BlockButton variant="secondary" disabled={isBeatBusy(b.id)} onClick={() => replanBeatAssets(b.id)}>
+                            {sceneBusy === b.id ? '↻ Re-planning…' : '↻ Re-plan this beat'}
+                          </BlockButton>
+                        </div>
+                      )}
                       {!previewDead[b.id] ? (
                         <img src={`/api/v1/projects/${currentProject.id}/scenes/${b.id}/preview`}
                           alt={`Scene preview ${b.id}`} loading="lazy"

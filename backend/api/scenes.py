@@ -485,16 +485,16 @@ async def _ensure_beat_world_assets(proj_db, project_id: str, folder: str,
 
 
 @router.post("/projects/{project_id}/scenes/assets/plan")
-async def plan_scene_assets(project_id: str):
+async def plan_scene_assets(project_id: str, beat_id: Optional[str] = None):
     try:
-        return await _plan_assets_inner(project_id)
+        return await _plan_assets_inner(project_id, beat_id=beat_id)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Asset plan crashed: {type(e).__name__}: {e}")
 
 
-async def _plan_assets_inner(project_id: str):
+async def _plan_assets_inner(project_id: str, beat_id: Optional[str] = None):
     folder, ch_id = await _get_proj_info(project_id)
     proj_db = await get_project_db(folder)
     async with proj_db.execute(
@@ -505,6 +505,28 @@ async def _plan_assets_inner(project_id: str):
     if not scenes:
         await proj_db.close()
         raise HTTPException(400, "Plan scenes first (no scene rows to plan assets for).")
+    # S-T02: per-beat re-plan filter (existing AI logic, scoped to one beat).
+    # beat_id is an optional query param (?beat_id=B01) — no new AI job, just
+    # a filter on the same loop. Validates the beat belongs to this project
+    # so a typo 404s instead of silently planning zero beats.
+    filter_beat: Optional[str] = None
+    if beat_id is not None:
+        filter_beat = (beat_id or "").strip()
+        if not filter_beat:
+            await proj_db.close()
+            raise HTTPException(422, "beat_id must be non-empty when provided")
+        async with proj_db.execute(
+            "SELECT id FROM beats WHERE id=? AND project_id=?",
+            (filter_beat, project_id)) as cur:
+            beat_row = await cur.fetchone()
+        if not beat_row:
+            await proj_db.close()
+            raise HTTPException(404, "Beat not found")
+        filtered = [s for s in scenes if s["beat_id"] == filter_beat]
+        if not filtered:
+            await proj_db.close()
+            raise HTTPException(400, "Plan scenes first (no scene row for this beat).")
+        scenes = filtered
 
     async with proj_db.execute(
         "SELECT id, kind, title FROM library WHERE project_id=? AND status='ready' ORDER BY id",
@@ -668,11 +690,16 @@ async def _plan_assets_inner(project_id: str):
 
     await proj_db.commit()
     await proj_db.close()
-    return {"planned_scenes": planned_scenes, "total_needs": total_needs,
+    out = {"planned_scenes": planned_scenes, "total_needs": total_needs,
             "matched": matched, "to_generate": to_generate,
             "world_added": world_added_total, "mt_added": mt_added_total,
             "rw_added": rw_added_total,
             "failed": failed, "total_scenes": len(scenes)}
+    # S-T02: echo the filter so the strip hook can confirm it re-planned one
+    # beat (additive key — full-batch callers ignore it).
+    if filter_beat is not None:
+        out["beat_id"] = filter_beat
+    return out
 
 
 @router.post("/projects/{project_id}/scenes/assets/world-sync")
@@ -777,6 +804,78 @@ async def list_scene_assets(project_id: str):
         rows = [dict(r) for r in await cur.fetchall()]
     await proj_db.close()
     return rows
+
+
+# --- SCENES-MP4 S-T02: coverage lint + per-beat re-plan (backend, no AI) ---
+# Local check only (zero LLM calls): entities named in the beat (distinct
+# beat_elements.asset_ref — the beat breakdown's "who/what is in this beat")
+# vs assets planned (scene_assets rows for that beat). Thin = planned < named
+# with the reason "mentions {named} things, planned {planned}". Advisory only:
+# never blocks planning/approval/render — the strip hook shows an amber flag
+# with a one-click re-plan (POST .../assets/plan?beat_id=... above). Rich
+# beats (planned >= named, incl. pure-narration 0/0) stay silent (thin=false,
+# reason="").
+
+
+def _coverage_reason(named: int, planned: int) -> str:
+    thing = "thing" if named == 1 else "things"
+    return f"mentions {named} {thing}, planned {planned}"
+
+
+@router.get("/projects/{project_id}/scenes/coverage")
+async def scene_coverage(project_id: str):
+    """Advisory thin-beat lint (no AI, never blocks).
+
+    Returns per-beat {named, planned, thin, reason} + thin_count/total_beats.
+    """
+    try:
+        folder, _ = await _get_proj_info(project_id)
+        proj_db = await get_project_db(folder)
+        try:
+            async with proj_db.execute(
+                "SELECT id FROM beats WHERE project_id=? ORDER BY sort_order",
+                (project_id,)) as cur:
+                beat_ids = [r["id"] for r in await cur.fetchall()]
+            async with proj_db.execute(
+                "SELECT beat_id FROM scenes WHERE beat_id IN "
+                "(SELECT id FROM beats WHERE project_id=?)",
+                (project_id,)) as cur:
+                scene_set = {r["beat_id"] for r in await cur.fetchall()}
+            beats_out: list[dict] = []
+            thin_count = 0
+            for bid in beat_ids:
+                async with proj_db.execute(
+                    "SELECT DISTINCT asset_ref FROM beat_elements WHERE beat_id=?",
+                    (bid,)) as cur:
+                    refs = sorted(
+                        [r["asset_ref"] for r in await cur.fetchall() if r["asset_ref"]])
+                async with proj_db.execute(
+                    "SELECT COUNT(*) AS c FROM scene_assets WHERE beat_id=?",
+                    (bid,)) as cur:
+                    row = await cur.fetchone()
+                planned = int(row["c"]) if row else 0
+                named = len(refs)
+                thin = named > planned
+                reason = _coverage_reason(named, planned) if thin else ""
+                if thin:
+                    thin_count += 1
+                beats_out.append({
+                    "beat_id": bid,
+                    "named": named,
+                    "named_refs": refs,
+                    "planned": planned,
+                    "has_scene": bid in scene_set,
+                    "thin": thin,
+                    "reason": reason,
+                })
+        finally:
+            await proj_db.close()
+        return {"beats": beats_out, "thin_count": thin_count,
+                "total_beats": len(beat_ids)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Coverage check crashed: {type(e).__name__}: {e}")
 
 
 # --- SCENES-MP4 D9-T01: overlay spec (data + AI propose, no rendering) ---
