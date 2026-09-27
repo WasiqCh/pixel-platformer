@@ -36,6 +36,13 @@
 # -c copy) -> 08_handoff/<project>_final.mp4 (version _vN on re-render, never
 # overwrite). Never hold all frames at once: encode segment -> delete that
 # beat's frames -> next. Post-render asserts the frames dir is empty.
+#
+# F3-T01 ffmpeg motion by role, cheap filters only (worker-only, isolated):
+# pop-in fade + 4-direction slides via animated crop window + final-beat
+# fade-out, all inside the per-segment single encode (pad/crop/fade only —
+# NO xfade, NO zoompan). Concat stays `-c copy` (cuts stay cuts). Mapping by
+# overlay position / framing / chunk section (read-only); subtle by default
+# with SCENES_MOTION* env overrides. Planning/approval untouched.
 
 import asyncio
 import os
@@ -59,6 +66,138 @@ _TASKS: dict[str, asyncio.Task] = {}
 
 # Stills v1: 30 fps hold per P4-T02 spec (round(duration_sec*30) frames/beat).
 _FPS = 30
+
+# SCENES-MP4 F3-T01: ffmpeg motion by role, cheap filters only (worker-only).
+# Owner ruling 2026-09-27: NO xfade, NO zoompan (force re-encode, slow).
+# Allowed vocabulary only:
+#   - pop-in fade (short global fade-in on every beat; the worker holds a
+#     flattened preview PNG, so per-asset alpha would require re-compositing
+#     in scenes.py — out of scope for cheap filters — hence a 0.2s fade from
+#     black as the subtle pop-in approximation),
+#   - 4-direction slides via animated crop window (pad + animated crop, one
+#     direction per beat: up/down/left/right; plates + inserts steer the
+#     choice via overlay position / framing, see _motion_direction),
+#   - fade-out on the final beat only (0.5s to black).
+# Mapping by beat role/framing (read-only — never touches planning/approval):
+#   overlay position first (top* -> down, bottom/lower-third -> up,
+#   top-left -> right, top-right -> left), else beat_elements framing
+#   (close -> up, wide/long/establishing -> left, medium/full -> right),
+#   else chunk-section keyword (hook -> right, payoff/outro/finale -> left,
+#   turn/twist -> up), else index % 4 fallback (guarantees 4-dir coverage).
+#   Overlay role (name/place/date/...) is semantic, not directional, so it
+#   does not steer the direction — position does.
+# Intensity: subtle by default (12px shift, 0.2s fade-in, 0.5s fade-out).
+# Env overrides (no DB, no other files): SCENES_MOTION=off disables all
+# motion (byte-identical baseline path, no -vf), SCENES_MOTION_PX (int px),
+# SCENES_MOTION_FADE_IN / SCENES_MOTION_FADE_OUT (seconds, floats).
+# Cuts stay cuts: the concat step keeps `-c copy` untouched (no re-encode,
+# hard cuts at every beat boundary); motion lives inside the existing
+# per-segment single encode only. No xfade / zoompan strings anywhere.
+
+
+def _motion_settings() -> dict:
+    """Read motion intensity (env only, once per worker start). Never raises:
+    bad values fall back to the subtle defaults."""
+    mode = (os.environ.get("SCENES_MOTION") or "subtle").strip().lower()
+    try:
+        px = int((os.environ.get("SCENES_MOTION_PX") or "12").strip())
+    except (TypeError, ValueError):
+        px = 12
+    try:
+        fi = float((os.environ.get("SCENES_MOTION_FADE_IN") or "0.2").strip())
+    except (TypeError, ValueError):
+        fi = 0.2
+    try:
+        fo = float((os.environ.get("SCENES_MOTION_FADE_OUT") or "0.5").strip())
+    except (TypeError, ValueError):
+        fo = 0.5
+    px = min(max(px, 0), 32)
+    fi = min(max(fi, 0.0), 1.0)
+    fo = min(max(fo, 0.0), 1.5)
+    return {"off": mode == "off", "px": px,
+            "fade_in": fi, "fade_out": fo}
+
+
+def _motion_direction(idx: int, overlay_pos: str | None,
+                      framings: list[str], chunk_id: str | None) -> str:
+    """One slide direction per beat (up|down|left|right). Deterministic in
+    (idx, overlay_pos, framings, chunk_id) so resumes re-encode identically."""
+    pos = (overlay_pos or "").strip().lower()
+    if pos in ("top", "top-left", "top-right", "bottom", "lower-third"):
+        if pos == "top":
+            return "down"  # plate drops from the top edge
+        if pos in ("bottom", "lower-third"):
+            return "up"  # plate rises from the bottom edge
+        if pos == "top-left":
+            return "right"  # plate enters from the left edge
+        return "left"  # top-right -> enters from the right edge
+    for f in framings or []:
+        fl = (f or "").strip().lower()
+        if fl == "close":
+            return "up"
+        if fl in ("wide", "long", "establishing"):
+            return "left"
+        if fl in ("medium", "full"):
+            return "right"
+    ch = (chunk_id or "").strip().lower()
+    if "hook" in ch:
+        return "right"
+    if any(k in ch for k in ("payoff", "outro", "finale")):
+        return "left"
+    if any(k in ch for k in ("turn", "twist")):
+        return "up"
+    return ("right", "left", "up", "down")[idx % 4]
+
+
+def _motion_vf(direction: str, count: int, is_final: bool,
+               fade_in_sec: float, fade_out_sec: float, px: int) -> str | None:
+    """Cheap-filter chain for one beat: pad + animated crop + fade(s).
+
+    Uses ONLY pad/crop/fade (no xfade, no zoompan). Output stays 1920x1080
+    so every segment keeps identical codec params and the concat `-c copy`
+    still joins hard cuts. Returns None when there is nothing to animate
+    (count < 2 or px == 0 with no fades applicable)."""
+    if count < 2:
+        return None
+    try:
+        px_i = int(px)
+    except (TypeError, ValueError):
+        px_i = 12
+    px_i = min(max(px_i, 0), 32)
+    total = max(count - 1, 1)
+    dur = count / _FPS
+    try:
+        fi = float(fade_in_sec)
+    except (TypeError, ValueError):
+        fi = 0.2
+    try:
+        fo = float(fade_out_sec)
+    except (TypeError, ValueError):
+        fo = 0.5
+    fi = min(max(fi, 0.0), max(dur / 2.0, 0.0))
+    parts: list[str] = []
+    if px_i > 0:
+        # Pad once, then slide the 1920x1080 crop window linearly across the
+        # beat. Window centre is (px,px); moving it right shows the image
+        # sliding left, etc. Expressions use `n` (0-based frame in this
+        # single-segment encode, so resumes match fresh runs).
+        parts.append(f"pad={1920 + 2 * px_i}:{1080 + 2 * px_i}:{px_i}:{px_i}:color=black")
+        if direction == "left":  # image slides left
+            x_e, y_e = f"{px_i}+{px_i}*n/{total}", f"{px_i}"
+        elif direction == "right":  # image slides right
+            x_e, y_e = f"{px_i}-{px_i}*n/{total}", f"{px_i}"
+        elif direction == "up":  # image slides up
+            x_e, y_e = f"{px_i}", f"{px_i}+{px_i}*n/{total}"
+        else:  # "down": image slides down
+            x_e, y_e = f"{px_i}", f"{px_i}-{px_i}*n/{total}"
+        parts.append(f"crop=1920:1080:x='{x_e}':y='{y_e}'")
+    if fi >= 1.0 / _FPS:
+        parts.append(f"fade=t=in:st=0:d={fi:.3f}")
+    if is_final:
+        fo_c = min(max(fo, 0.0), max(dur - fi, 0.0))
+        if fo_c >= 1.0 / _FPS:
+            parts.append(f"fade=t=out:st={max(dur - fo_c, 0.0):.3f}:d={fo_c:.3f}")
+    return ",".join(parts) if parts else None
 
 # SCENES-MP4 P4-T03: ffmpeg probe (same discipline as the Inkscape probe in
 # generation.py: env override -> PATH, never hard-coded, clear error naming
@@ -137,20 +276,26 @@ def _run_cmd(cmd: list[str], timeout: int) -> None:
 
 
 def _encode_segment(ffmpeg: str, frames_dir: Path, first_num: int, count: int,
-                    wav: Path, seg_path: Path) -> None:
+                    wav: Path, seg_path: Path, vf: str | None = None) -> None:
     """One beat's frames + its WAV -> one segment MP4. -y so a resume redo of
     the in-flight beat overwrites deterministically (idempotent). -shortest
     keeps A/V in sync when the rounded frame hold differs from the WAV by a
-    fraction of a frame; -frames:v caps the image2 reader to this beat."""
+    fraction of a frame; -frames:v caps the image2 reader to this beat.
+
+    F3-T01: optional `vf` carries the cheap-filter chain (pad + animated
+    crop + fade, never xfade/zoompan) inside this same single encode — the
+    concat step stays `-c copy`, so cuts stay cuts."""
     cmd = [ffmpeg, "-y",
            "-framerate", str(_FPS), "-start_number", str(first_num),
            "-i", str(frames_dir / "frame_%06d.png"),
-           "-i", str(wav),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(_FPS),
-           "-c:a", "aac", "-b:a", "192k",
-           "-frames:v", str(count),
-           "-shortest",
-           str(seg_path)]
+           "-i", str(wav)]
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(_FPS),
+            "-c:a", "aac", "-b:a", "192k",
+            "-frames:v", str(count),
+            "-shortest",
+            str(seg_path)]
     _run_cmd(cmd, timeout=300)
 
 
@@ -242,7 +387,12 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
     (P4-T02) + ffmpeg per-segment mux + concat to versioned final MP4 — no
     LLM calls. Shape kept from P4-T01: persist current_segment + progress
     after EVERY segment, check for cooperative cancel BETWEEN segments (never
-    mid-segment), resume from the persisted current_segment."""
+    mid-segment), resume from the persisted current_segment.
+
+    F3-T01: per-segment cheap motion (pad + animated crop + fade) inside the
+    same single encode; concat stays `-c copy` (cuts stay cuts). Mapping
+    queries below are read-only (overlay position, beat framing, chunk
+    section) — planning/approval rows are never written here."""
     proj_db = None
     try:
         # Fail fast with a clear error naming everything tried (same
@@ -251,9 +401,12 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
             ffmpeg, _ff_source, _ff_tried = _probe_ffmpeg()
         except FileNotFoundError as e:
             raise RuntimeError(str(e))
+        # F3-T01 intensity (env only, read once so a mid-render env flip
+        # cannot make the resume diverge from the fresh pass).
+        motion = _motion_settings()
         proj_db = await get_project_db(folder)
         async with proj_db.execute(
-            "SELECT id, duration_sec FROM beats WHERE project_id=? AND stale=0 "
+            "SELECT id, duration_sec, chunk_id FROM beats WHERE project_id=? AND stale=0 "
             "ORDER BY sort_order",
             (project_id,),
         ) as cur:
@@ -382,11 +535,29 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
             src = Path(getattr(resp, "path", "") or "")
             if not src.name or not src.exists() or src.stat().st_size == 0:
                 raise RuntimeError(f"beat {beat_id}: preview missing ({src})")
+            # F3-T01 mapping (read-only): first overlay position + framing
+            # list + chunk section -> one slide direction; final beat also
+            # fades out. Deterministic, so a resume re-encodes identically.
+            async with proj_db.execute(
+                    "SELECT position FROM scene_overlays WHERE beat_id=? "
+                    "ORDER BY id LIMIT 1", (beat_id,)) as cur:
+                orow = await cur.fetchone()
+            overlay_pos = orow["position"] if orow else None
+            async with proj_db.execute(
+                    "SELECT framing FROM beat_elements WHERE beat_id=? "
+                    "ORDER BY sort_order", (beat_id,)) as cur:
+                framings = [(r["framing"] or "") for r in await cur.fetchall()]
+            direction = _motion_direction(
+                i, overlay_pos, framings, beats[i].get("chunk_id"))
+            is_final = (i == total - 1)
+            vf = (None if motion["off"] else _motion_vf(
+                direction, need, is_final,
+                motion["fade_in"], motion["fade_out"], motion["px"]))
             first_num = next_frame
             await asyncio.to_thread(_write_beat_frames, src, frames_dir, first_num, need)
             seg_path = segments_dir / f"seg_{i + 1:03d}.mp4"
             await asyncio.to_thread(
-                _encode_segment, ffmpeg, frames_dir, first_num, need, wav, seg_path)
+                _encode_segment, ffmpeg, frames_dir, first_num, need, wav, seg_path, vf)
             if not seg_path.exists() or seg_path.stat().st_size == 0:
                 raise RuntimeError(f"beat {beat_id}: segment missing after encode ({seg_path})")
             # Never hold all frames at once: this beat's frames go now.
@@ -806,5 +977,6 @@ async def request_render(project_id: str):
         f"{'Resumed' if resumed else 'Started'} render job {job_id} "
         f"at segment {job['current_segment']}/{job['total_segments']} "
         f"(P4-T03: per-beat PNG-loop + WAV -> segment MP4 -> concat to "
-        f"{job['output_path']}; frames deleted per segment).")
+        f"{job['output_path']}; F3-T01 cheap motion inside each segment "
+        f"encode only, concat stays -c copy; frames deleted per segment).")
     return out
