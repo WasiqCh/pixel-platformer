@@ -668,6 +668,19 @@ click a fill swatch → wheel → preview updates. Layman-safe (no code visible)
 *Acceptance: recolor round-trips (red→blue→red byte-equal); invalid color 400;
 revert intact.*
 
+### ST-T01 — PROJECT STATUS ENDPOINT (owner priority 2026-09-27; small)
+
+Why: runbook/agents/UIs ask six queries to learn project state. One call
+answers all. Read-only aggregate, no writes, no new tables.
+
+**ST-T01 — `GET /projects/{id}/status`.**
+Single JSON: beats total/stale, voice WAVs present/missing, scenes
+approved/unapproved/stale, assets matched/pending, gens by status, overlays
+count, gate (`can_render` + blocker lists, reuse `render_gate`), latest render
+job (status/progress/output). Compose existing queries only — no new logic.
+*Acceptance: one call on CH03_EP02 returns correct counts matching the six
+individual endpoints; unknown project 404; zero DB writes (prove read-only).*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
