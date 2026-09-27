@@ -22,7 +22,8 @@ Record the `project_id` (e.g. `CH04_EP01`) — every call below needs it.
 
 | # | Do | DONE when |
 |---|---|---|
-| 1 | Beat Board → Break beats | beats listed, counts look right |
+| 1 | Beat Board → Break beats | beats listed, 6–14 words each, none span two sentences |
+| 1.5 | Extract cast + locations + world (Cast/Locations/World Desk) | registry exists: every place a scene will cite is an approved E-ID (scenes cannot cite what was never extracted) |
 | 2 | Narrate & Retime | every beat has a WAV + measured duration |
 | 3 | ① Plan scenes | every beat has a scene row with shot + reasoning |
 | 4 | ② Plan assets | every need is library-hit OR pending gen (counts balance) |
