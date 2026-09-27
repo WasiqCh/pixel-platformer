@@ -525,6 +525,47 @@ per MP4 (existing file serving pattern). Reuses existing endpoints only.
 *Acceptance: render speaks no jargon; a failed render names its scene + fix;
 finished MP4 plays and downloads from My Video; lint 0 errors.*
 
+### API BATCH — CALL ROBUSTNESS + MODEL CONTROL (owner priority 2026-09-27; deferred)
+
+Why: free routed models are slow (SDK timeout is 600s, so hung calls haunt the
+2-slot queue); button states live in the tab only (reload = amnesia); model
+switches strand old-model queues with no windows and no cancel. Six tickets.
+
+**API-T01 — Timeout knob.** Settings-level LLM timeout (default ~120s): slow
+models get room, hung calls die with a clear error instead of blocking the
+semaphore for 10 minutes. Thread through `_client`/`_chat` (all jobs share it).
+*Acceptance: a call exceeding the knob fails with a timeout error naming the
+job; normal calls unaffected; knob editable in Settings.*
+
+**API-T02 — Per-project cancel switch.** Backend tracks live LLM tasks per
+project; a "stop everything" endpoint drops queued + running tasks for that
+project (cooperative checks at dispatch boundaries). Button on the pipeline
+card next to the queue count.
+*Acceptance: 10 queued calls → cancel → all marked cancelled within seconds,
+semaphore free, no partial writes (validation-gated writes only).*
+
+**API-T03 — Sticky buttons + queue count.** Button/disabled states derived from
+server truth on load (running 5/30 survives reload); a visible "N calls waiting"
+count from semaphore depth exposed via a status endpoint. Frontend only reads.
+*Acceptance: reload mid-run restores exact states; queue count matches live
+in-flight + waiting calls.*
+
+**API-T04 — Run scoping.** Every batch stamped with a run id; responses from a
+pre-switch/pre-cancel run can't overwrite post-switch results (stale responses
+dropped with a log line, never applied).
+*Acceptance: switch models mid-run → old-model latecomers dropped, new-model
+results applied; job_log shows the drops, not silent overwrites.*
+
+**API-T05 — Per-job model override.** Settings map job → model (e.g. coder for
+`svg_gen`, fast one for the rest); resolution order job-map > tier > single.
+*Acceptance: svg_gen runs on the coder while scene_plan runs on the chat model
+in the same batch (prove via job_log model fields).*
+
+**API-T06 — Palette wiring.** Channel kit palette flows into the svg_gen
+`palette` context (today hardcoded `[]`, so models freestyle colors).
+*Acceptance: palette set on kit → svg context carries it (prove via job_log
+context_pack); generated fills stay inside the palette.*
+
 ---
 
 ## 8. Report template (paste this filled after EVERY ticket)
@@ -583,7 +624,7 @@ Ledger: flipped P_-T__ → ✅/🛑
 | D9-T02 | ✅ | uncommitted | Overlay render (scenes.py shared _draw_overlays via _probe_overlay_font/_overlay_font TTF bold-first + _parse_plate_color from item + zone stacking; render.py single-renderer comment, no second text path; cache key gains overlays[] content; missing/label boxes + beat tag moved to same TTF; X-Overlays-Total header; CH03_EP02 live: B02 1920x1080 110510B plates #4DC3FF/#B8B8C0 sampled, 1-letter July 1497→1498 busts d4c58d→5ab289 cached:false bytes differ, revert restores d4c58d, 3/3 frames byte-match preview, probe fail loud FileNotFoundError tried-list, 0 load_default() calls) |
 | D9-T03 | ✅ | uncommitted | World Desk as asset source + map honesty (scenes.py only, no schema, no AI job, no frontend): BE-driven photo injection (_ensure_beat_world_assets: MT always honesty row, RW only with Download Desk file, kind=photo insert-default, idempotent insert-if-missing) + MT guard on LLM-need path (MT match → honesty row, never SVG faked map) + POST .../assets/world-sync backfill (no LLM, safe on 107 finals) + compositor pastes world files like any asset (_draw_map_coming_box via shared TTF, X-Map-Count/X-World-Total, cache key gains is_map/world_id); CH03_EP02 live: world-sync 10 MT + 6 RW = 16 photo rows (123 total = 107 final SVG untouched, XOR 0, MT-with-gen 0), B02 RW01 real file (LIB20 green 40770px) + MT01 honesty box (mapfill 329692px) headers Map:1 World:2 Missing:2 Assets:7, re-fetch cached:true same hash, re-sync 0 dupes; RW01 file is synthetic green test PNG (provenance test cc0) — real Download Desk portrait replaces it |
 | D5+D10-T01 | ✅ | uncommitted | Sidebar regroup + purpose hints (frontend-only): nav reordered to real flow script→cast→locations→world→beats→assets→library→checkpoint→myvideo (Sidebar.jsx, ids+labels unchanged); variants/sheets/export under "classic (external art)" divider; hint under every entry (cast "who exists, feeds scenes", sheets "external art only"); new My Video node (S16_MyVideo.jsx placeholder, App.jsx routed+render, full output in T03); backend diff empty; lint 0 errors, build clean |
-| D5+D10-T02 | ⬜ | — | Setup screen (not started; first-run green ticks + one-click fix) |
+| D5+D10-T02 | ✅ | uncommitted | Setup screen (new backend/api/setup.py + S19_Setup.jsx, App.jsx auto-open-once + routed, Sidebar Setup node first): GET /setup/status reuses Inkscape/ffmpeg/Kokoro probes + fresh-import packages + Ollama /api/tags; POST /setup/fix/{id} one button per item (pip/winget/weights-download, PATH refresh, re-probe same probe); live: all-green 5/5, real missing→fix→green loop on packages (sse-starlette uninstall→pip reinstall 3.4.11), other 4 already-ok re-probed green, S19 zero inputs; lint 0 errors (25 warnings: 24 baseline + 1 same-pattern) |
 | D5+D10-T03 | ⬜ | — | Plain-words render + My Video output (not started; reuses existing endpoints only) |
 
 `⬜` todo · `🟡` in progress (max one) · `✅` done (acceptance evidenced) · `🛑` blocked (note why).
