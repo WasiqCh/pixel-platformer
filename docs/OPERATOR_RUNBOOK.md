@@ -112,8 +112,16 @@ This is what "follow the reference wall" means in practice (see ref):
   anything except linking the same asset over and over. One asset reused
   more than 3× per 10-beat batch needs a stated beat-requirement; icons,
   photos, and maps reuse by nature and are exempt. `more` means make,
-  never link.
-- [ ] Citation: frame cited per decision, or deviation stated.
+  never link. A new pose is a new asset with its own YOU-file — never a
+  parenthetical ("close", "rear view") on a reuse line. Reuse = identical
+  file + identical staging, cited beat — anything else is a new asset.
+- [ ] Pictures vs words: every visual (arrows, X, calendars, skulls)
+  is an asset need; overlay rows hold words only (name, date, number,
+  quote). Pictures in the words list fail the batch.
+- [ ] Recount before presenting: tally re-checked against the lists;
+  mismatches fail before review.
+- [ ] Citation: frame cited per decision; every deviation names the
+  asset ID it attaches to.
 
 ### Vocabulary + triggers (final — full 108-frame inventory, bundles to 8)
 
@@ -158,7 +166,9 @@ carries its trigger — the words that summon it:
 ### Assets vs add-ons (counting rules — the only definition that counts)
 - Asset = character, environment, or sourced visual (RW photo, real map
   image). File-less MT honesty boxes are placeholders, not assets.
-- Min 2, standard 4–5, cap 8 assets per beat.
+- Min 2, standard 4–5, cap 8 assets per beat. Min 2 is for
+  declared-sparse beats only (void, funeral, single-figure beats);
+  every other beat carries 4+.
 - Mandatory add-ons (never counted): name plate every beat; corner
   badge every beat.
 - Other overlays: ~80% of beats, usually 2–3 (date/place/quote/number),
@@ -173,10 +183,10 @@ carries its trigger — the words that summon it:
 | 0 | Reference wall (§1.5, once per channel) | 6 sheets in `references/`, driver viewed, later steps cite frames |
 |---|---|---|
 | 1 | Beat Board → Break beats | beats listed, 6–14 words each, none span two sentences |
-| 1.5 | Extract cast + locations + world (Cast/Locations/World Desk) | registry exists: every place a scene will cite is an approved E-ID (scenes cannot cite what was never extracted) |
+| 1.5 | Extract cast + locations + world (Cast/Locations/World Desk) | registry exists: every place a scene will cite is an approved E-ID (scenes cannot cite what was never extracted) + every character carries its pose inventory for the phase (script action verbs → named poses: stand/point/seated/close/…), so no beat can collapse distinct stagings into one master |
 | 2 | Narrate & Retime | every beat has a WAV + measured duration |
 | 3 | ① Plan scenes | every beat has a scene row with shot + reasoning |
-| 4 | ② Plan assets (in 10-beat batches, see §2.5) | every need is library-hit OR pending gen (counts balance) |
+| 4 | ② Plan assets (in 10-beat batches, see §2.5) | every need is library-hit OR pending gen (counts balance) + every need cites a registry ID (C/E/RW/MT/ICON/LIB, unnamed entities rejected) + character needs cite pose-specific assets (C01-stand, never bare C01) + 4+ assets per beat (2 only for declared-sparse beats) |
 | 4.5 | Prompt files (user-mode assets) | every `you`-mode asset has a prompt `.md` (see §2.5) |
 | 5 | ③ Generate SVGs (loop) | every gen `generated` (then Approve → raster PNG → Finalize) |
 | 6 | Approve scenes (1-click or batch) | scenes all approved |
@@ -269,7 +279,15 @@ Your orders are `more` (add assets), `reduce` (cut assets),
 batch is generated until you say so. Every batch review renders each
 beat in exactly this shape, no other format accepted:
 `B01 (assets N + overlays M) = -> [asset list] -> [overlay list] ->
-badge + plate`.
+badge + plate` — where every asset is `ID mode detail`, every reuse
+carries its reason inline (`reuse: same staging as B02`), every new
+pose names its YOU-file, every MT states file-or-box, and declared
+counts match the lists or the batch fails review. Each batch review
+opens with a reuse tally (`C01-stand ×4, E01-intact ×3, …`) — any asset
+over 3× per 10 fails regardless of reasons. Blanket reasons
+(`continuity`, `witness`, `same character`, `foreground`) are banned:
+reuse is allowed ONLY for identical pose file + identical staging,
+cited beat. Forced reasons fail the batch.
 
 Voice: Kokoro default for our channel (local model, per-beat WAV +
 measured duration, no keys). Gemini fallback only on explicit order.
