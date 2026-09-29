@@ -27,8 +27,9 @@ Naming: ASK the user for the project display name at creation (pass as
 immutable plumbing; the display name can be renamed anytime on your word
 (`PUT /projects/{id} {slug}`), folders never move (P-01).
 Ask who generates, per beat: `me / you / sourced / video` (see §2.5).
-Default: props + icons = me; characters + places = your call; real
-faces = sourced-first.
+Default recommendation: characters + environments = you (prompt files);
+props + icons + overlays + fetching = me; real faces = sourced-first.
+Still ask per character/place — the default recommends, never locks.
 
 ## 1.5. Step 0 — Reference wall (style DNA, once per channel)
 
@@ -88,27 +89,33 @@ This is what "follow the reference wall" means in practice (see ref):
   once a Download Desk file exists — never redraw a face the record shows.
 - [ ] Maps for places: every place-name beat cites its MT map (file) or
   honesty box while file-less.
-- [ ] Plates every beat: name (+nickname) + date/place overlays; quotes in
-  speech bubbles; counts drawn big.
+- [ ] Plates: name (+nickname) plate every beat; other overlays on ~80%
+  of beats (date/place/quote/number, usually 2–3, cap 8); quotes in
+  speech bubbles; counts drawn big. Overlays are never assets.
 - [ ] Badge every beat: corner subject avatar top-right, implemented as
   a photo/prop need pinned top-right via explicit x/y/scale. Every beat
   names its avatar; no beat ships without one.
 - [ ] Shared icons: drawn ONCE as library masters and reused — never
   redrawn per beat. Full set + triggers live in the vocabulary below.
 - [ ] Gore: pixelated, XXX, or symbolic — never depicted.
-- [ ] Bundles, not counts: one trigger word per visual change; as many
-  elements as the word needs (measured: up to 8 landing on a single
-  name-word), never a cap, never one-by-one. Small counts are the common
-  case, not a rule.
+- [ ] Asset counts: assets = character + environment + sourced (RW photos
+  + real map images) ONLY — overlays, plates, badges, props, icons are
+  add-ons, never assets. Min 2, standard 4–5, cap 8 per beat. One trigger
+  word per visual change; bundles land whole, never one-by-one.
 - [ ] Whitespace is correct: target ~60–70% void per scene (measured mean
   65% on the wall). Compose mass in the upper two-thirds, symmetric and
   center-weighted, ground strip or float — never full-bleed packing to
   "fill" the frame. Feet float free or on a strip, never ON another
   object. Explicit x/y/scale per element (box + contain-fit); seeded
   scatter is a fallback, never the plan.
+- [ ] Fresh beats: new art by default — draw, fetch, or prompt-file,
+  anything except linking the same asset over and over. One asset reused
+  more than 3× per 10-beat batch needs a stated beat-requirement; icons,
+  photos, and maps reuse by nature and are exempt. `more` means make,
+  never link.
 - [ ] Citation: frame cited per decision, or deviation stated.
 
-### Vocabulary + triggers (final — full 108-frame inventory, no caps)
+### Vocabulary + triggers (final — full 108-frame inventory, bundles to 8)
 
 Everything below was observed on the wall, nothing assumed. Each type
 carries its trigger — the words that summon it:
@@ -148,6 +155,17 @@ carries its trigger — the words that summon it:
 - Gore: pixelated, XXX, blood as flat pools/drips only — never wound
   detail, never depiction.
 
+### Assets vs add-ons (counting rules — the only definition that counts)
+- Asset = character, environment, or sourced visual (RW photo, real map
+  image). File-less MT honesty boxes are placeholders, not assets.
+- Min 2, standard 4–5, cap 8 assets per beat.
+- Mandatory add-ons (never counted): name plate every beat; corner
+  badge every beat.
+- Other overlays: ~80% of beats, usually 2–3 (date/place/quote/number),
+  cap 8, never counted as assets.
+- Props + icons: seasoning, planned per beat, drawn once as masters,
+  never counted.
+
 ## 2. Pipeline order (each step's DONE criteria)
 
 | # | Do | DONE when |
@@ -162,7 +180,7 @@ carries its trigger — the words that summon it:
 | 4.5 | Prompt files (user-mode assets) | every `you`-mode asset has a prompt `.md` (see §2.5) |
 | 5 | ③ Generate SVGs (loop) | every gen `generated` (then Approve → raster PNG → Finalize) |
 | 6 | Approve scenes (1-click or batch) | scenes all approved |
-| 7 | Check overlays (auto-proposed per scene) | plates read right, ≤1 plate + 1 badge |
+| 7 | Check overlays | name plate every beat; others ~80%, 2–3 typical, cap 8 |
 | 8 | Checkpoint green → Render | MP4 in My Video, plays + downloads |
 
 Key endpoints (all `POST` unless noted):
@@ -191,7 +209,9 @@ Modes (ask per beat, write the choice into the need reasoning):
   Commons search with license filter, or any-URL fetch with license +
   author recorded; non-Commons licenses are flagged for review before
   publish). If nothing good found, brain gives you 2–3 exact search
-  strings, you return a link, brain fetches it.
+  strings, you return a link, brain fetches it. Workaround rule: when
+  the brain can't draw something good, it source-fetches instead of
+  shipping weak art — approved fallback, never a failure.
 - `video` (only on explicit order): NOT YET SUPPORTED — render is
   stills-only (preview PNG held `duration×30` frames + WAV, concat).
   Spec when built: `yt_url + start_sec + secs_needed + extra_safe_secs`
@@ -230,7 +250,7 @@ Beat loop (the gate): beats run ONE at a time — plan beat N →
 make/fetch every asset → approve each → preview beat N → overlay check
 → your explicit OK → N+1. Never batch silently in play mode. Beat DONE =
 every need final or library-hit + preview clean (no red boxes) + plates
-read right (≤1 plate + 1 badge) + your ok. Every review message carries the
+read right (name always; other overlays per the counting rules) + your ok. Every review message carries the
 exact preview link (`http://127.0.0.1:8100/api/v1/projects/{id}/scenes/{beat}/preview`)
 AND the on-disk path (`data/projects/{folder}/07_beats/previews/{file}.png`) —
 never a review without both. The backend already supports
@@ -246,7 +266,10 @@ with file, map box, icon reuse). No beat hides its asset list.
 Your orders are `more` (add assets), `reduce` (cut assets),
 `change` (swap something), or `next` (lock the batch, move to the next
 10). `iterate` reworks inside the current batch; `next` advances. No
-batch is generated until you say so.
+batch is generated until you say so. Every batch review renders each
+beat in exactly this shape, no other format accepted:
+`B01 (assets N + overlays M) = -> [asset list] -> [overlay list] ->
+badge + plate`.
 
 Voice: Kokoro default for our channel (local model, per-beat WAV +
 measured duration, no keys). Gemini fallback only on explicit order.
