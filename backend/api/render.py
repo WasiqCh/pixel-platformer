@@ -541,15 +541,17 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
             except ValueError as e:
                 raise RuntimeError(f"beat {beat_id}: {e}")
             if staging_doc is None:
-                step_spans = [{"hide": [], "frames": need}]
+                step_spans = [{"hide": [], "hide_ov": [], "frames": need}]
             else:
                 step_spans = staging_mod.spans(
                     staging_doc, beats[i].get("duration_sec"), need)
             span_srcs = []
             for _sp in step_spans:
                 _hide = ",".join(str(x) for x in _sp["hide"])
+                _hov = ",".join(str(x) for x in _sp.get("hide_ov") or [])
                 _resp = await scenes_api.scene_preview(
-                    project_id, beat_id, hide=_hide or None)
+                    project_id, beat_id, hide=_hide or None,
+                    hide_ov=_hov or None)
                 _src = Path(getattr(_resp, "path", "") or "")
                 if (not _src.name or not _src.exists()
                         or _src.stat().st_size == 0):

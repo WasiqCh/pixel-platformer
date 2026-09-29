@@ -1439,10 +1439,12 @@ def _file_hash(p: Path) -> str:
 
 @router.get("/projects/{project_id}/scenes/{beat_id}/preview")
 async def scene_preview(project_id: str, beat_id: str,
-                        hide: Optional[str] = None):
-    # Phase 2 timed layers: ?hide=1,2,3 drops those scene_assets need IDs
-    # from this render (variant stills). Empty/absent = full scene.
-    # Included in the scene-hash canon below, so variants cache separately.
+                        hide: Optional[str] = None,
+                        hide_ov: Optional[str] = None):
+    # Phase 2 timed layers: ?hide=1,2,3 drops those scene_assets need IDs,
+    # ?hide_ov=4,5 drops those scene_overlays row IDs (timed plates).
+    # Empty/absent = full scene. Both in the scene-hash canon below, so
+    # variants cache separately.
     from PIL import Image as _Image
     from PIL import ImageDraw as _Draw
 
@@ -1483,6 +1485,10 @@ async def scene_preview(project_id: str, beat_id: str,
                 "WHERE beat_id=? ORDER BY id",
                 (beat_id,)) as cur:
             overlay_rows = [dict(r) for r in await cur.fetchall()]
+        hov_set = {t for t in ((hide_ov or "").split(",")) if t.strip()}
+        if hov_set:
+            overlay_rows = [o for o in overlay_rows
+                            if str(o["id"]) not in hov_set]
         # D9-T03: world index for MT honesty (map_trigger → "map coming" box).
         async with proj_db.execute(
                 "SELECT id, type, text FROM world_records WHERE project_id=?",
@@ -1635,6 +1641,7 @@ async def scene_preview(project_id: str, beat_id: str,
     canon = {
         "beat_id": beat_id,
         "hide": sorted(hide_set) if hide_set else [],
+        "hide_ov": sorted(hov_set) if hov_set else [],
         "place_asset_ref": place_ref,
         "shot": scene.get("shot") or "",
         "scene_updated_at": scene.get("updated_at") or "",

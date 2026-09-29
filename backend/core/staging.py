@@ -2,11 +2,11 @@
 #
 # A staging file says what is visible WHEN inside one beat:
 #   {"version": 1, "beat_id": "B01", "steps": [
-#     {"t": 0.0, "hide": [], "note": "base tableau"},
-#     {"t": 2.4, "hide": [12], "note": "map out on 'Brooklyn'"},
+#     {"t": 0.0, "hide": [], "hide_ov": [], "note": "base tableau"},
+#     {"t": 2.4, "hide": [12], "hide_ov": [4], "note": "map out, plate in"},
 #   ]}
-# hide = scene_assets need IDs hidden from that time on (cumulative per
-# step is the author's job — each step lists the FULL hide set). Steps
+# hide = scene_assets need IDs hidden from that time on; hide_ov =
+# scene_overlays row IDs (timed plates). Each step lists the FULL sets. Steps
 # must start at t=0 and ascend. Files live at
 # 07_beats/staging/{beat_id}.json (sidecars, never rows). Missing file =
 # single step, current stills behavior untouched.
@@ -52,7 +52,12 @@ def validate(doc: dict) -> dict:
         if not isinstance(hide, list) or any(
                 not isinstance(x, int) for x in hide):
             raise ValueError(f"step {i} hide must be a list of need IDs")
+        hov = s.get("hide_ov") or []
+        if not isinstance(hov, list) or any(
+                not isinstance(x, int) for x in hov):
+            raise ValueError(f"step {i} hide_ov must be a list of overlay IDs")
         norm.append({"t": t, "hide": sorted(set(hide)),
+                     "hide_ov": sorted(set(hov)),
                      "note": str(s.get("note") or "")})
     if norm[0]["t"] != 0.0:
         raise ValueError("first step t must be 0.0")
@@ -92,7 +97,8 @@ def spans(doc: dict, duration_sec: float, total_frames: int) -> list:
             n = min(max(n, 0), total_frames - used)
         else:
             n = total_frames - used
-        out.append({"hide": list(s["hide"]), "frames": n,
-                    "t0": t0, "t1": t1})
+        out.append({"hide": list(s["hide"]),
+                    "hide_ov": list(s.get("hide_ov") or []),
+                    "frames": n, "t0": t0, "t1": t1})
         used += n
     return out

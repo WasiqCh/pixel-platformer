@@ -86,7 +86,8 @@ This is what "follow the reference wall" means in practice (see ref):
   not a wallpaper.
 - [ ] Photos over redraws: every real-person beat cites its RW photo insert
   once a Download Desk file exists — never redraw a face the record shows.
-- [ ] Maps for places: every place-name beat cites its MT honesty box.
+- [ ] Maps for places: every place-name beat cites its MT map (file) or
+  honesty box while file-less.
 - [ ] Plates every beat: name (+nickname) + date/place overlays; quotes in
   speech bubbles; counts drawn big.
 - [ ] Badge every beat: corner subject avatar top-right, implemented as
@@ -200,7 +201,9 @@ Modes (ask per beat, write the choice into the need reasoning):
 
 Prompt files (the solid piece): one per `you`-mode asset at
 `07_beats/prompts/{gen_label}.md` (next to the pack export), written by
-the brain, never by an app model:
+the brain, never by an app model. Poses get their own files
+(`YOU-{ref}-{pose}.md`, e.g. `YOU-C01-stand.md`) — one file per
+generatable unit, boilerplate copied whole into each, never split:
 - Subject block: repeat the asset name every line, zero pronouns.
 - Style-DNA block: thin 2–3px outlines, void-first, bundles sized by
   trigger (no count caps), flat fills, no gradients/shading (copied from
@@ -231,7 +234,9 @@ read right (≤1 plate + 1 badge) + your ok. Every review message carries the
 exact preview link (`http://127.0.0.1:8100/api/v1/projects/{id}/scenes/{beat}/preview`)
 AND the on-disk path (`data/projects/{folder}/07_beats/previews/{file}.png`) —
 never a review without both. The backend already supports
-every per-beat call; the loop is discipline, not code.
+every per-beat call; the loop is discipline, not code. Assignment runs
+in 10-beat batches; making runs serially inside the released batch —
+one beat fully done before the next.
 
 Asset batches of 10: step 4 assigns assets for beats 1–10 first, then
 11–20, and so on. After each batch of 10 the driver shows the assignment
@@ -272,19 +277,35 @@ start/end):
   never for our own audio).
 
 Staging file per beat: `07_beats/staging/{beat}.json`, shape
-`{version:1, beat_id, steps:[{t, hide:[need IDs], note}]}` (t ascends
-from 0, each step lists the FULL hide set; validated by
-`backend/core/staging.py`, missing file = plain stills). Derived from
-the timing + the §1.5 grammar (bundle on names, evidence on facts,
-map→arrow→label stagger); cited like everything else.
+`{version:1, beat_id, steps:[{t, hide:[need IDs], hide_ov:[overlay IDs],
+note}]}` (t ascends from 0, each step lists the FULL hide sets;
+validated by `backend/core/staging.py`, missing file = plain stills).
+Derived from the timing + the §1.5 grammar (bundle on names, evidence
+on facts, map→arrow→label stagger); cited like everything else.
+Accuracy gate: below ~75% exact word hits, the beat is flagged and
+re-aligned with a bigger model before any staging is written from it —
+triggers on guessed times land bundles on wrong words, silently.
 
-Variant previews: `GET .../scenes/{beat}/preview?hide=1,2,3` drops those
-need IDs from the render (separate scene-hash cache per hide set).
-Render reads the staging file per beat and holds each variant PNG for
-its word-boundary span — same concat, no ffmpeg filter changes. Beats
-without staging files render exactly as before. Video-clip inserts stay
-DEFERRED (needs yt-dlp + video layer + splice — separate build, only on
-explicit order).
+Variant previews: `GET .../scenes/{beat}/preview?hide=1,2,3&hide_ov=4,5`
+drops those need / overlay IDs from the render (separate scene-hash
+cache per hide set) — plates CAN be timed: present in early variants,
+hidden in later ones or vice versa. Render reads the staging file per
+beat and holds each variant PNG for its word-boundary span — same
+concat, no ffmpeg filter changes. Beats without staging files render
+exactly as before. Video-clip inserts stay DEFERRED (needs yt-dlp +
+video layer + splice — separate build, only on explicit order).
+
+## 2.7. Phases + operator contract
+
+Big scripts plan in spans of ~8–10 beats: registry → scenes → assets →
+review per span, lock it, next span. Fresh context, small reviews, no
+drift. A span is DONE only at locked batch + approved previews.
+
+Operator contract: every word, asset, and beat is the driver's
+responsibility. Own bad asset → iterate unprompted, no waiting to be
+told. Bad sourced image → re-download until perfect (10× if needed),
+never file a wrong face. User asset below the bar → reject it outright
+and state the standard it must meet. No silent passes, ever.
 
 ## 3. State checks (read-only, use freely)
 
@@ -327,7 +348,9 @@ View the asset's PNG (Assets page / preview) → say what's wrong in words
 ("thicker outlines", "angrier eyes") → new version arrives, old kept, revert
 anytime. You may also PROVIDE reference pictures with your note ("draw the
 eyes like this") — the note + your pictures travel to the model together.
-Repeat until liked, then approve.
+Repeat until liked, then approve. (Playbook mode: no app model runs —
+your pictures ride inside the prompt file you paste into your own
+generator.)
 
 ## 8. Play mode — step by step with a human gate (owner workflow)
 
