@@ -50,9 +50,10 @@ How Brofessor Stein does it (see ref — every item below cites frames):
   photos pasted raw (see ref `sheet_02_hitmen` frames 26–27, `sheet_03_kings`
   frames 05–06). That is what our RW/world-photo inserts are for — never
   redraw a face the record can show.
-- Maps name places: country map + highlighted region + red arrow + label
-  (see ref `sheet_02_hitmen` frames 20/29). That is what our MT honesty
-  boxes are for — never a faked map.
+- Maps name places: MT slots take REAL map images — sourced (URL + license +
+  author in the tracker) or generated from a prompt by you/me. Never AI-faked
+  geography. File-less MT rows render the honest "MAP COMING" box as fallback.
+  (Owner unlock 2026-09-29: old never-any-map rule retired.)
 - Red curved arrow = cause, black arrow = sequence, red X = no, green
   check = yes (see ref `sheet_06_doctors` frames 20–24).
 - Text grammar: name + nickname plate top-center, date/place under it
@@ -64,8 +65,8 @@ How Brofessor Stein does it (see ref — every item below cites frames):
 - Gore is pixelated or XXX-censored, never drawn (see ref `sheet_01_hitmen`
   frame 02). Our symbolic rule (marks, parcels, frost — never depiction)
   is the same instinct.
-- One idea per frame, 2–5 elements max, characters slide in and out.
-  Sparse beats sparse scenes.
+- One idea per frame; characters slide in and out. Sparse beats
+  sparse scenes.
 
 Rule: every scene shot, asset prompt, and overlay must cite its frame
 ("per `sheet_02_hitmen` frame 24") or state why it deviates. DONE when 6
@@ -78,22 +79,73 @@ This is what "follow the reference wall" means in practice (see ref):
 
 - [ ] Thin lines: every asset uses THIN uniform black outlines (~2–3px at
   1080p). Thick outlines (≥5px) are rejected at review, no exceptions.
-- [ ] Void-first: scenes stage on the solid light-blue canvas with 2–5
-  floating elements. Full rooms only for demanded interiors/night (dark
-  olive wall). One E-ID may resolve to void + prop fragments — a place is
+- [ ] Void-first: scenes stage on the solid light-blue canvas. Measured
+  whitespace on the wall is ~65% — voids are correct, packing is the
+  defect. Full rooms only for demanded interiors/night (dark olive
+  wall). One E-ID may resolve to void + prop fragments — a place is
   not a wallpaper.
 - [ ] Photos over redraws: every real-person beat cites its RW photo insert
   once a Download Desk file exists — never redraw a face the record shows.
 - [ ] Maps for places: every place-name beat cites its MT honesty box.
 - [ ] Plates every beat: name (+nickname) + date/place overlays; quotes in
   speech bubbles; counts drawn big.
-- [ ] Badge every beat: corner subject avatar in the badge slot.
-- [ ] Shared icons: causal red arrow / sequence black arrow / red X / green
-  check / skull are drawn ONCE as library masters and reused — never
-  redrawn per beat.
+- [ ] Badge every beat: corner subject avatar top-right, implemented as
+  a photo/prop need pinned top-right via explicit x/y/scale. Every beat
+  names its avatar; no beat ships without one.
+- [ ] Shared icons: drawn ONCE as library masters and reused — never
+  redrawn per beat. Full set + triggers live in the vocabulary below.
 - [ ] Gore: pixelated, XXX, or symbolic — never depicted.
-- [ ] Density: ≤5 elements and one idea per scene.
+- [ ] Bundles, not counts: one trigger word per visual change; as many
+  elements as the word needs (measured: up to 8 landing on a single
+  name-word), never a cap, never one-by-one. Small counts are the common
+  case, not a rule.
+- [ ] Whitespace is correct: target ~60–70% void per scene (measured mean
+  65% on the wall). Compose mass in the upper two-thirds, symmetric and
+  center-weighted, ground strip or float — never full-bleed packing to
+  "fill" the frame. Feet float free or on a strip, never ON another
+  object. Explicit x/y/scale per element (box + contain-fit); seeded
+  scatter is a fallback, never the plan.
 - [ ] Citation: frame cited per decision, or deviation stated.
+
+### Vocabulary + triggers (final — full 108-frame inventory, no caps)
+
+Everything below was observed on the wall, nothing assumed. Each type
+carries its trigger — the words that summon it:
+- Name plate + nickname, top-center, EVERY frame. Date/era under it only
+  when the script gives one. Corner avatar (current-subject head),
+  top-right, EVERY frame — a pinned need, never decoration.
+- Speech bubbles: direct quotes only, anchored to the speaker's mouth.
+- Label arrows: small text + thin arrow naming a figure or place
+  IN-frame ("Klansman", "Santa Rosa, California") — distinct from plates.
+- Pictogram bubbles: statistics as drawings (count + stick figures),
+  "..." for silence.
+- Stat callouts: big number + small unit ("<100 pounds / 45 kg" with
+  scale icon, "30 years", giant counts arrowed to bodies).
+- Photos (mugshot/portrait/group/painting/building/aerial): first intro
+  of a real person + key evidence moments, plain rectangles, no borders,
+  roughly every third beat. Never redraw a face the record shows.
+- Maps: country + red region + red arrow + label above; small inset for
+  foreign ground. Every place name, every move between places.
+- Flags: identity shorthand beside figures (never explained, always
+  recognized).
+- Icons and their triggers — death: skull, crossed/flaming swords,
+  tombstone, coffin (killing/death words); negation: red X (never/no/
+  rejected words); confirm: green check; time: calendar, clock, lungs;
+  authority: crown, medal/ribbon, badge-man, gavel bench; evidence:
+  reports doc, poison bottle, syringe, scale, briefcase, press kit;
+  warning: skull-triangle, virus; censor: pixelation or XXX on gore
+  nouns. Drawn once as library masters, reused forever.
+- Tableaus for plurals: rows and lineups (gunmen row, shootout, press
+  pack, trial table, meal, digging pair, suit lineup) — never one figure
+  standing for a crowd.
+- Vehicles on travel verbs (van/car + trunk + boxes accumulate frame to
+  frame); isometric buildings on institution nouns (prison, camp);
+  furniture on sit/eat/sleep/try verbs (bed, table, bench, throne).
+- Transitions: FULL CLEAR on subject change (whole bundle lands on the
+  name-word at once); ACCUMULATE within a subject (van gains rifle,
+  then body); giant-face zoom as the wipe device between eras.
+- Gore: pixelated, XXX, blood as flat pools/drips only — never wound
+  detail, never depiction.
 
 ## 2. Pipeline order (each step's DONE criteria)
 
@@ -105,7 +157,7 @@ This is what "follow the reference wall" means in practice (see ref):
 | 1.5 | Extract cast + locations + world (Cast/Locations/World Desk) | registry exists: every place a scene will cite is an approved E-ID (scenes cannot cite what was never extracted) |
 | 2 | Narrate & Retime | every beat has a WAV + measured duration |
 | 3 | ① Plan scenes | every beat has a scene row with shot + reasoning |
-| 4 | ② Plan assets | every need is library-hit OR pending gen (counts balance) |
+| 4 | ② Plan assets (in 10-beat batches, see §2.5) | every need is library-hit OR pending gen (counts balance) |
 | 4.5 | Prompt files (user-mode assets) | every `you`-mode asset has a prompt `.md` (see §2.5) |
 | 5 | ③ Generate SVGs (loop) | every gen `generated` (then Approve → raster PNG → Finalize) |
 | 6 | Approve scenes (1-click or batch) | scenes all approved |
@@ -150,8 +202,9 @@ Prompt files (the solid piece): one per `you`-mode asset at
 `07_beats/prompts/{gen_label}.md` (next to the pack export), written by
 the brain, never by an app model:
 - Subject block: repeat the asset name every line, zero pronouns.
-- Style-DNA block: thin 2–3px outlines, void-first, 2–5 elements, flat
-  fills, no gradients/shading (copied from the channel kit, not invented).
+- Style-DNA block: thin 2–3px outlines, void-first, bundles sized by
+  trigger (no count caps), flat fills, no gradients/shading (copied from
+  the channel kit, not invented).
 - Composition: the scene shot + placement + which plates sit on it.
 - Negatives: photorealism, gradients, text/logos in art, gore depicted.
 - Params: aspect + size + which reference frames to attach.
@@ -174,8 +227,21 @@ Beat loop (the gate): beats run ONE at a time — plan beat N →
 make/fetch every asset → approve each → preview beat N → overlay check
 → your explicit OK → N+1. Never batch silently in play mode. Beat DONE =
 every need final or library-hit + preview clean (no red boxes) + plates
-read right (≤1 plate + 1 badge) + your ok. The backend already supports
+read right (≤1 plate + 1 badge) + your ok. Every review message carries the
+exact preview link (`http://127.0.0.1:8100/api/v1/projects/{id}/scenes/{beat}/preview`)
+AND the on-disk path (`data/projects/{folder}/07_beats/previews/{file}.png`) —
+never a review without both. The backend already supports
 every per-beat call; the loop is discipline, not code.
+
+Asset batches of 10: step 4 assigns assets for beats 1–10 first, then
+11–20, and so on. After each batch of 10 the driver shows the assignment
+and waits — the review lists EVERY beat with its assets named: each
+asset with kind + source (library-hit with LIB id, pending gen, photo
+with file, map box, icon reuse). No beat hides its asset list.
+Your orders are `more` (add assets), `reduce` (cut assets),
+`change` (swap something), or `next` (lock the batch, move to the next
+10). `iterate` reworks inside the current batch; `next` advances. No
+batch is generated until you say so.
 
 Voice: Kokoro default for our channel (local model, per-beat WAV +
 measured duration, no keys). Gemini fallback only on explicit order.

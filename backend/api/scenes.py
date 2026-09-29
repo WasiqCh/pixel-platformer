@@ -305,7 +305,9 @@ def _map_need_kind_to_library(kind: str) -> str:
 # "map coming" box — never a silent blank, never a faked map.
 # Shape: BE-driven injection (beat_elements RW/MT cites) + an MT guard on the
 # LLM-need path (an LLM need that matches an MT world becomes an honesty row,
-# never an SVG miss). No new tables, no new AI jobs, no frontend changes.
+# never an SVG miss). MT rows WITH a map file paste it like any photo asset;
+# file-less MT rows resolve to the honest labelled "map coming" box — never a
+# silent blank, never a faked map (owner unlock 2026-09-29).
 # World rows are kind='photo', library_ref set, needs_generate=0 — so the
 # existing XOR CHECK holds and the trace query is a join through
 # library.asset_ref = world_records.id.
@@ -1563,8 +1565,11 @@ async def scene_preview(project_id: str, beat_id: str,
             layer = "insert"
 
         rel, reason, path, fhash = "", "", None, ""
-        if is_map:
-            # MT honesty: live world text in the reason so a text change busts
+        # Owner unlock 2026-09-29: MT rows WITH a sourced/generated map file
+        # paste it via the standard branch below (real geography + provenance
+        # in world_records — never AI-faked). File-less MT rows keep the box.
+        if is_map and not _world_file_ready(base, lib):
+            # MT honesty fallback (file-less rows only): live world text in the
             # the scene-hash cache (stale map box is a bug, same rule as D9-T02
             # overlay text). Path stays None so missing-count stays honest.
             world_id = (lib.get("asset_ref") if lib else "") or "MT"
@@ -1713,9 +1718,10 @@ async def scene_preview(project_id: str, beat_id: str,
         by = min(max(by, 0), _PRE_H - 1)
         bw = min(bw, _PRE_W - bx)
         bh = min(bh, _PRE_H - by)
-        # D9-T03 MT honesty: map rows NEVER paste a file and NEVER go blank —
-        # always the labelled "map coming" box (even if a file ever lands).
-        if it.get("is_map"):
+        # D9-T03 MT honesty: map rows NEVER go blank — file-less rows get the
+        # labelled "map coming" box; rows WITH a sourced/generated map file
+        # paste it like any photo asset (owner unlock 2026-09-29).
+        if it.get("is_map") and it["path"] is None:
             world_id = it.get("world_id") or "MT"
             world_text = (world_by_id.get(world_id, {}).get("text")
                           or it["need"].get("name") or "")
