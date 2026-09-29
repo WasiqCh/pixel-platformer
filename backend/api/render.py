@@ -531,10 +531,31 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
                 raise RuntimeError(
                     f"beat {beat_id}: voiceover WAV missing/empty ({wav}) — "
                     "build voiceover first")
-            resp = await scenes_api.scene_preview(project_id, beat_id)
-            src = Path(getattr(resp, "path", "") or "")
-            if not src.name or not src.exists() or src.stat().st_size == 0:
-                raise RuntimeError(f"beat {beat_id}: preview missing ({src})")
+            resp = None
+            # Phase 2 timed layers: a staging file splits this beat into
+            # variant stills (one preview PNG per step, frames split at word
+            # boundaries). No staging file = single span, old path exactly.
+            from backend.core import staging as staging_mod
+            try:
+                staging_doc = staging_mod.load(base, beat_id)
+            except ValueError as e:
+                raise RuntimeError(f"beat {beat_id}: {e}")
+            if staging_doc is None:
+                step_spans = [{"hide": [], "frames": need}]
+            else:
+                step_spans = staging_mod.spans(
+                    staging_doc, beats[i].get("duration_sec"), need)
+            span_srcs = []
+            for _sp in step_spans:
+                _hide = ",".join(str(x) for x in _sp["hide"])
+                _resp = await scenes_api.scene_preview(
+                    project_id, beat_id, hide=_hide or None)
+                _src = Path(getattr(_resp, "path", "") or "")
+                if (not _src.name or not _src.exists()
+                        or _src.stat().st_size == 0):
+                    raise RuntimeError(
+                        f"beat {beat_id}: preview missing ({_src})")
+                span_srcs.append((_src, _sp["frames"]))
             # F3-T01 mapping (read-only): first overlay position + framing
             # list + chunk section -> one slide direction; final beat also
             # fades out. Deterministic, so a resume re-encodes identically.
@@ -554,7 +575,13 @@ async def _run_render(project_id: str, folder: str, job_id: int) -> None:
                 direction, need, is_final,
                 motion["fade_in"], motion["fade_out"], motion["px"]))
             first_num = next_frame
-            await asyncio.to_thread(_write_beat_frames, src, frames_dir, first_num, need)
+            _off = 0
+            for _src, _n in span_srcs:
+                if _n > 0:
+                    await asyncio.to_thread(
+                        _write_beat_frames, _src, frames_dir,
+                        first_num + _off, _n)
+                _off += _n
             seg_path = segments_dir / f"seg_{i + 1:03d}.mp4"
             await asyncio.to_thread(
                 _encode_segment, ffmpeg, frames_dir, first_num, need, wav, seg_path, vf)

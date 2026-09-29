@@ -1436,7 +1436,11 @@ def _file_hash(p: Path) -> str:
 
 
 @router.get("/projects/{project_id}/scenes/{beat_id}/preview")
-async def scene_preview(project_id: str, beat_id: str):
+async def scene_preview(project_id: str, beat_id: str,
+                        hide: Optional[str] = None):
+    # Phase 2 timed layers: ?hide=1,2,3 drops those scene_assets need IDs
+    # from this render (variant stills). Empty/absent = full scene.
+    # Included in the scene-hash canon below, so variants cache separately.
     from PIL import Image as _Image
     from PIL import ImageDraw as _Draw
 
@@ -1461,6 +1465,9 @@ async def scene_preview(project_id: str, beat_id: str):
                 "SELECT * FROM scene_assets WHERE beat_id=? ORDER BY id",
                 (beat_id,)) as cur:
             needs = [dict(r) for r in await cur.fetchall()]
+        hide_set = {t for t in ((hide or "").split(",")) if t.strip()}
+        if hide_set:
+            needs = [n for n in needs if str(n["id"]) not in hide_set]
         async with proj_db.execute(
                 "SELECT * FROM beat_elements WHERE beat_id=? ORDER BY sort_order",
                 (beat_id,)) as cur:
@@ -1622,6 +1629,7 @@ async def scene_preview(project_id: str, beat_id: str):
     # file bytes; reason covers live map text; is_map/world_id cover linkage).
     canon = {
         "beat_id": beat_id,
+        "hide": sorted(hide_set) if hide_set else [],
         "place_asset_ref": place_ref,
         "shot": scene.get("shot") or "",
         "scene_updated_at": scene.get("updated_at") or "",

@@ -29,6 +29,7 @@ from backend.api import recipes as recipes_api
 from backend.api import stale as stale_api
 from backend.api import dashboard as dashboard_api  # <--- ADD
 from backend.api import scenes as scenes_api  # <--- ADD
+from backend.api import wordtime as wordtime_api  # Phase 2: word timings
 from backend.api import render as render_api  # <--- ADD (P3-T03 gate)
 from backend.api import setup as setup_api  # <--- ADD (D5+D10-T02 setup probes)
 
@@ -74,6 +75,7 @@ app.include_router(recipes_api.router, prefix="/api/v1")
 app.include_router(stale_api.router, prefix="/api/v1")
 app.include_router(dashboard_api.router, prefix="/api/v1")
 app.include_router(scenes_api.router, prefix="/api/v1")
+app.include_router(wordtime_api.router, prefix="/api/v1")
 app.include_router(render_api.router, prefix="/api/v1")
 app.include_router(setup_api.router, prefix="/api/v1")
 

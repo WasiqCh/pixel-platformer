@@ -325,6 +325,21 @@ CREATE TABLE IF NOT EXISTS scene_overlays (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 26. beat_words (Phase 2: word timings for timed layers, runbook §2.6).
+-- One row per script word per beat (REPLACE on re-align, never append).
+-- Staging scripts themselves live as JSON sidecars (core/staging.py),
+-- not rows — timing data here, choreography there.
+CREATE TABLE IF NOT EXISTS beat_words (
+    beat_id TEXT NOT NULL REFERENCES beats(id),
+    idx INTEGER NOT NULL,
+    word TEXT NOT NULL,
+    start_sec REAL NOT NULL,
+    end_sec REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'whisper',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (beat_id, idx)
+);
 """
 
 async def init_app_db(db_conn):

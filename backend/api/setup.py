@@ -157,9 +157,11 @@ def _check_kokoro() -> dict:
 
 _CHECKS: list[tuple[str, str]] = [
     ("packages", "Python packages (app brain)"),
-    ("inkscape", "Inkscape (art \u2192 PNG)"),
+    ("inkscape", "Inkscape (art → PNG)"),
     ("ffmpeg", "FFmpeg (video + sound mux)"),
     ("kokoro", "Kokoro voice (free narration)"),
+    ("ollama", "Ollama (local AI)"),
+    ("whisper", "Whisper CLI (word timing)"),
 ]
 
 
@@ -172,6 +174,8 @@ async def _run_check(check_id: str) -> dict:
         body = await asyncio.to_thread(_check_ffmpeg)
     elif check_id == "kokoro":
         body = await asyncio.to_thread(_check_kokoro)
+    elif check_id == "whisper":
+        body = await asyncio.to_thread(_check_whisper)
     else:
         raise HTTPException(404, f"unknown setup check: {check_id}")
     label = dict(_CHECKS)[check_id]
@@ -287,6 +291,28 @@ def _fix_winget_sync(pkg_id: str) -> tuple[bool, str]:
     return (code == 0 or already), f"{' '.join(argv)}\nexit {code}\n{note}\n{out}"
 
 
+def _check_whisper() -> dict:
+    """Whisper CLI for word timing (runbook §2.6). System-python install —
+    the venv must NOT carry torch, so this probes PATH only (same rule as
+    the requirements.txt comment). Backend resolves it via WHISPER_BIN."""
+    fix_cmd = "py -m pip install openai-whisper"
+    which = shutil.which("whisper")
+    if which and os.path.isfile(which):
+        return {"ok": True, "detail": f"found via PATH: {which}",
+                "fix_label": "Install Whisper (system python)",
+                "fix_command": fix_cmd}
+    return {"ok": False, "detail": "whisper not on PATH (tried PATH lookup)",
+            "fix_label": "Install Whisper (system python)",
+            "fix_command": fix_cmd}
+
+
+def _fix_whisper_sync() -> tuple[bool, str]:
+    code, out = _run_cmd(["py", "-m", "pip", "install", "openai-whisper"],
+                         timeout=600)
+    note = _refresh_path_from_registry()
+    return code == 0, f"py -m pip install openai-whisper\nexit {code}\n{note}\n{out}"
+
+
 @router.post("/setup/fix/{check_id}")
 async def setup_fix(check_id: str):
     """Run ONE fix for a missing item, then re-probe with the same probe the
@@ -311,6 +337,8 @@ async def setup_fix(check_id: str):
             wok, out = await asyncio.to_thread(_fix_kokoro_weights_sync)
         else:
             wok, out = await asyncio.to_thread(_fix_kokoro_packages_sync)
+    elif check_id == "whisper":
+        wok, out = await asyncio.to_thread(_fix_whisper_sync)
     else:
         raise HTTPException(404, f"unknown setup check: {check_id}")
     after = await _run_check(check_id)

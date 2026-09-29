@@ -6,4 +6,8 @@ python-multipart
 sse-starlette
 aiosqlite
 pydantic
-httpx==0.28.1
+httpx==0.28.1
+# openai-whisper lives in SYSTEM python (not the venv): backend/core/wordtime.py
+# shells out to the `whisper` CLI (WHISPER_BIN env -> PATH). Install with
+# system python (`py -m pip install openai-whisper`, needs torch) — do NOT
+# add it here or the venv pulls a multi-GB torch on every fresh install.

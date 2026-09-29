@@ -1444,6 +1444,36 @@ async def upload_svg_asset(project_id: str, gen_id: int, file: UploadFile = File
 _RASTER_W, _RASTER_H = 1920, 1080
 
 
+def _fit_export_size(svg_bytes: bytes) -> tuple[int, int]:
+    """Aspect-fit export dims inside (_RASTER_W, _RASTER_H).
+
+    The old code forced -w 1920 -h 1080 on every SVG, which baked a
+    non-uniform squash into any non-16:9 art (3:4 characters looked
+    flattened, square icons stretched). Fit instead: parse the SVG's own
+    width/height (else viewBox), scale to fit, never exceed the cap.
+    Falls back to the full cap when unparseable.
+    """
+    w = h = 0.0
+    try:
+        head = svg_bytes[:4000].decode("utf-8", "ignore")
+        m = re.search(r"<svg[^>]*\bwidth\s*=\s*[\"']([\d.]+)", head, re.IGNORECASE)
+        m2 = re.search(r"<svg[^>]*\bheight\s*=\s*[\"']([\d.]+)", head, re.IGNORECASE)
+        if m and m2:
+            w, h = float(m.group(1)), float(m2.group(1))
+        else:
+            m3 = re.search(
+                r"<svg[^>]*\bviewBox\s*=\s*[\"']([\d.\-]+)[\s,]+([\d.\-]+)[\s,]+([\d.\-]+)[\s,]+([\d.\-]+)[\"']",
+                head, re.IGNORECASE)
+            if m3:
+                w, h = float(m3.group(3)), float(m3.group(4))
+    except Exception:
+        w = h = 0.0
+    if w <= 0 or h <= 0:
+        return _RASTER_W, _RASTER_H
+    scale = min(_RASTER_W / w, _RASTER_H / h)
+    return max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+
+
 async def _approve_svg_row(project_id, folder, ch_id, gen_id):
     base = get_project_dir(ch_id, folder.split("_")[1])
     svg_dir = base / "06_sheets" / "svg"
@@ -1520,8 +1550,9 @@ async def _approve_svg_row(project_id, folder, ch_id, gen_id):
         await proj_db.commit()
         await proj_db.close()
         return {"gen_id": gen_id, "status": "error", "error": msg}
+    ew, eh = _fit_export_size(svg_bytes)
     cmd = [inkscape, str(svg_file), "--export-type=png",
-           f"--export-filename={dest}", "-w", str(_RASTER_W), "-h", str(_RASTER_H)]
+           f"--export-filename={dest}", "-w", str(ew), "-h", str(eh)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as e:
@@ -1628,8 +1659,9 @@ async def svg_playground(project_id: str, data: SvgPlaygroundRequest):
         inkscape, source, _tried = _probe_inkscape()
     except FileNotFoundError as e:
         raise HTTPException(500, str(e)[:300])
+    ew, eh = _fit_export_size(clean_svg.encode("utf-8"))
     cmd = [inkscape, svg_tmp, "--export-type=png",
-           f"--export-filename={png_tmp}", "-w", str(_RASTER_W), "-h", str(_RASTER_H)]
+           f"--export-filename={png_tmp}", "-w", str(ew), "-h", str(eh)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as e:
