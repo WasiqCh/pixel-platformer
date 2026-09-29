@@ -4,8 +4,8 @@ import BlockButton from '../components/BlockButton';
 
 // D5+D10-T02 — Setup screen (first-run green ticks + one-click fix).
 // Probes (never typed paths): Python packages, Inkscape (existing probe),
-// ffmpeg (existing probe), Kokoro deps + weights (D4-T01 findings), Ollama
-// connection. Each missing item gets ONE Fix button (winget for binaries,
+// ffmpeg (existing probe), Kokoro deps + weights (D4-T01 findings).
+// Each missing item gets ONE Fix button (winget for binaries,
 // pip for packages, download for weights). Status re-probes after every fix.
 // App.jsx auto-opens this screen on launch while anything is red — free
 // navigation still holds (leave and come back anytime, nothing is blocked).

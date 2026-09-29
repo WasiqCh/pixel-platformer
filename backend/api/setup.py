@@ -10,7 +10,6 @@
 #   kokoro    = voiceover._kokoro_probe (deps import + D4-T01 weight paths) +
 #               espeak smoke via kokoro_onnx.tokenizer.Tokenizer (D4-T01 §b:
 #               phonemize ONLY through Tokenizer, never raw phonemizer)
-#   ollama    = GET 127.0.0.1:11434/api/tags (native API, short timeout)
 # Each missing item gets ONE Fix button: winget for binaries, pip for
 # packages, direct download for weights (to the KOKORO_MODEL / KOKORO_VOICES
 # resolved paths — D4-T01 defaults, never typed by the user). Every fix ends
@@ -54,9 +53,6 @@ _KOKORO_VOICES_MIN = 10_000_000
 
 _WINGET_INKSCAPE = "Inkscape.Inkscape"
 _WINGET_FFMPEG = "Gyan.FFmpeg"
-_WINGET_OLLAMA = "Ollama.Ollama"
-
-_OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
 _OUT_TAIL = 2000
 
@@ -159,31 +155,11 @@ def _check_kokoro() -> dict:
             "_fix_kind": "kokoro-ok"}
 
 
-async def _check_ollama() -> dict:
-    import httpx
-    fix_cmd = (f"winget install --id {_WINGET_OLLAMA} -e --silent "
-               "--accept-package-agreements --accept-source-agreements")
-    try:
-        async with httpx.AsyncClient(timeout=5) as cl:
-            r = await cl.get(_OLLAMA_TAGS_URL)
-        if r.status_code != 200:
-            return {"ok": False, "detail": f"Ollama API HTTP {r.status_code} at {_OLLAMA_TAGS_URL}",
-                    "fix_label": "Install + start Ollama (winget)", "fix_command": fix_cmd}
-        names = [m.get("name", "?") for m in (r.json().get("models") or [])]
-        return {"ok": True,
-                "detail": f"Ollama up at 127.0.0.1:11434, {len(names)} model(s): " + (", ".join(names) or "none"),
-                "fix_label": "Install + start Ollama (winget)", "fix_command": fix_cmd}
-    except Exception as e:
-        return {"ok": False, "detail": f"Ollama unreachable at {_OLLAMA_TAGS_URL}: {type(e).__name__}: {str(e)[:150]}",
-                "fix_label": "Install + start Ollama (winget)", "fix_command": fix_cmd}
-
-
 _CHECKS: list[tuple[str, str]] = [
     ("packages", "Python packages (app brain)"),
     ("inkscape", "Inkscape (art \u2192 PNG)"),
     ("ffmpeg", "FFmpeg (video + sound mux)"),
     ("kokoro", "Kokoro voice (free narration)"),
-    ("ollama", "Ollama (local AI)"),
 ]
 
 
@@ -196,8 +172,6 @@ async def _run_check(check_id: str) -> dict:
         body = await asyncio.to_thread(_check_ffmpeg)
     elif check_id == "kokoro":
         body = await asyncio.to_thread(_check_kokoro)
-    elif check_id == "ollama":
-        body = await _check_ollama()
     else:
         raise HTTPException(404, f"unknown setup check: {check_id}")
     label = dict(_CHECKS)[check_id]
@@ -313,57 +287,6 @@ def _fix_winget_sync(pkg_id: str) -> tuple[bool, str]:
     return (code == 0 or already), f"{' '.join(argv)}\nexit {code}\n{note}\n{out}"
 
 
-def _ollama_binary() -> str | None:
-    which = shutil.which("ollama")
-    if which and os.path.isfile(which):
-        return which
-    cand = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
-    return cand if os.path.isfile(cand) else None
-
-
-def _fix_ollama_sync() -> tuple[bool, str]:
-    log: list[str] = []
-    binary = _ollama_binary()
-    if not binary:
-        ok, out = _fix_winget_sync(_WINGET_OLLAMA)
-        log.append(out)
-        if not ok:
-            return False, "\n".join(log)
-        binary = _ollama_binary()
-    else:
-        log.append(f"ollama binary present: {binary}")
-    # Server up? If not, spawn it detached (one click = running, not just
-    # installed) and poll the native API.
-    import httpx
-    try:
-        r = httpx.get(_OLLAMA_TAGS_URL, timeout=5)
-        if r.status_code == 200:
-            log.append("Ollama server already answering")
-            return True, "\n".join(log)
-    except Exception:
-        pass
-    try:
-        subprocess.Popen([binary, "serve"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         stdin=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-        log.append("spawned `ollama serve` detached, polling…")
-    except Exception as e:
-        return False, "\n".join(log) + f"\nspawn failed: {type(e).__name__}: {str(e)[:200]}"
-    for _i in range(15):
-        try:
-            r = httpx.get(_OLLAMA_TAGS_URL, timeout=5)
-            if r.status_code == 200:
-                log.append("Ollama server answering after start")
-                return True, "\n".join(log)
-        except Exception:
-            pass
-        import time
-        time.sleep(2)
-    log.append("server still not answering after ~30s — start Ollama manually, then Re-check")
-    return False, "\n".join(log)
-
-
 @router.post("/setup/fix/{check_id}")
 async def setup_fix(check_id: str):
     """Run ONE fix for a missing item, then re-probe with the same probe the
@@ -388,8 +311,6 @@ async def setup_fix(check_id: str):
             wok, out = await asyncio.to_thread(_fix_kokoro_weights_sync)
         else:
             wok, out = await asyncio.to_thread(_fix_kokoro_packages_sync)
-    elif check_id == "ollama":
-        wok, out = await asyncio.to_thread(_fix_ollama_sync)
     else:
         raise HTTPException(404, f"unknown setup check: {check_id}")
     after = await _run_check(check_id)
