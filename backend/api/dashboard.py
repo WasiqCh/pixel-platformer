@@ -264,6 +264,65 @@ async def project_status(project_id: str):
     }
 
 
+# --- CHATBOT_RUNBOOK §6: one-call resume bundle (read-only, no writes). ---
+# GET /projects/{id}/chat-handoff: everything a FRESH chat needs to continue
+# mid-beat with no rework — dashboard next_action + status + pending gens +
+# beat order + render gate. Composes existing queries only (no _compose_all,
+# no LLM, no commit). "give me handoff" in chat returns this verbatim.
+@router.get("/projects/{project_id}/chat-handoff")
+async def chat_handoff(project_id: str):
+    from backend.api import render as _render_api
+
+    proj = await _proj(project_id)
+    folder = proj["folder_name"]
+    status = await project_status(project_id)
+    dash = await dashboard(project_id)
+    proj_db = await get_project_db(folder)
+    try:
+        async with proj_db.execute(
+            "SELECT id, gen_label, kind, asset_ref, beat_id, title, status "
+            "FROM generations WHERE project_id=? AND status NOT IN ('final','ready') "
+            "ORDER BY id",
+            (project_id,),
+        ) as cur:
+            pending = [dict(r) for r in await cur.fetchall()]
+        async with proj_db.execute(
+            "SELECT id, sort_order FROM beats WHERE project_id=? AND stale=0 "
+            "ORDER BY sort_order",
+            (project_id,),
+        ) as cur:
+            order = [r["id"] for r in await cur.fetchall()]
+    finally:
+        await proj_db.close()
+    gate = status.get("gate", {})
+    first_pending_beat = pending[0]["beat_id"] if pending else None
+    resume_line = (
+        f"Continue {project_id} ({proj.get('slug') or 'untitled'}) — "
+        f"{len(order)} beats, {len(pending)} gens pending"
+        + (f", current beat {first_pending_beat}" if first_pending_beat else "")
+        + f". Next: {dash['next_action']['label']}."
+    )
+    return {
+        "project_id": project_id,
+        "slug": proj.get("slug"),
+        "stage": proj.get("stage"),
+        "resume_line": resume_line,
+        "next_action": dash["next_action"],
+        "counts": dash["counts"],
+        "stale": dash["stale"],
+        "beats_order": order,
+        "pending_gens": pending,
+        "voice_missing": status["voice"]["missing_ids"],
+        "gate": {"can_render": gate.get("can_render"), "message": gate.get("message")},
+        "render_job": status.get("render_job"),
+        "how_to_continue": (
+            "New chat: re-call dashboard + status + generations + "
+            "voiceover/status + render/check, verify DONE, then continue at "
+            "the stated beat. Never trust the old summary."
+        ),
+    }
+
+
 # --- SCENES-MP4 I-T02: cast consistency check (report-only, never blocks). ---
 # GET /projects/{project_id}/cast-consistency: per character across beats,
 # palette hash + silhouette hash of approved PNGs; outliers listed with

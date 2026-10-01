@@ -1434,6 +1434,246 @@ async def upload_svg_asset(project_id: str, gen_id: int, file: UploadFile = File
             "previous_file_path": previous or None}
 
 
+class FinalizeHintRequest(BaseModel):
+    hint: str
+
+
+def _hint_target_filename(hint: str) -> str | None:
+    """Pull a filename token (with image ext) out of a vague human hint.
+
+    Accepts 'C01 -> spider.png in downloads', 'placed in downloads/foo.png',
+    absolute paths, or a bare filename. Returns the basename or None.
+    """
+    import re as _re
+    m = _re.findall(r"[\w\-.~\\/ ]+\.(?:svg|png|jpg|jpeg|webp)", hint or "", flags=_re.IGNORECASE)
+    if not m:
+        return None
+    # Last match wins ("C01 -> a.png in downloads" beats stray words); basename only.
+    import os as _os
+    return _os.path.basename(m[-1].strip()).strip()
+
+
+def _hint_search_dirs(base) -> list:
+    """Allowlisted dirs for vague-hint resolution (never silent full-disk scan).
+
+    The hint itself ('in downloads/...') is the explicit ok for that folder
+    (runbook §2.5 rule). Project dir is always allowed; home Downloads/Desktop
+    are allowed only when named by the hint.
+    """
+    from pathlib import Path as _Path
+    dirs = [base]
+    try:
+        home = _Path.home()
+        for sub in ("Downloads", "Desktop"):
+            cand = home / sub
+            try:
+                if cand.is_dir():
+                    dirs.append(cand)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return dirs
+
+
+@router.post("/projects/{project_id}/generate/svg/{gen_id}/finalize-from-hint")
+async def finalize_from_hint(project_id: str, gen_id: int, data: FinalizeHintRequest):
+    """Resolve a vague human pointer ('spider.png in downloads') to a file.
+
+    CHATBOT_RUNBOOK §4 lane: Dawood never opens the Assets page. He names a
+    file + folder in words; this endpoint finds it under allowlisted dirs
+    only (project dir + home Downloads/Desktop), validates + versions it
+    exactly like POST .../upload (never overwrite, source='uploaded'), and
+    returns the same shape so the chatbot can approve -> finalize -> preview.
+    0 matches or 2+ matches 400 with searched dirs / candidates — never guess.
+    """
+    from pathlib import Path as _Path
+    hint = (data.hint or "").strip()
+    if not hint:
+        raise HTTPException(400, "hint must be non-empty (need a filename like 'spider.png in downloads').")
+    target = _hint_target_filename(hint)
+    if not target:
+        raise HTTPException(400, "hint has no image filename (need e.g. 'spider.png in downloads').")
+    folder, ch_id = await _proj(project_id)
+    base = get_project_dir(ch_id, folder.split("_")[1])
+    low_hint = hint.lower()
+
+    # Absolute-path fast lane: only when the hint names an existing file
+    # (that naming IS the explicit outside-repo ok).
+    candidates: list[_Path] = []
+    abs_cand = _Path(hint.strip().strip('"')).expanduser() if len(hint) < 500 else None
+    if abs_cand is not None:
+        try:
+            if abs_cand.is_file() and abs_cand.name.lower() == target.lower():
+                candidates = [abs_cand]
+        except OSError:
+            pass
+    searched: list[str] = []
+    if not candidates:
+        dirs = _hint_search_dirs(base)
+        # Narrow to hinted dirs when the hint names one (fewer scans, explicit ok).
+        if "download" in low_hint:
+            dirs = [d for d in dirs if d == base or d.name.lower() in ("downloads", "desktop")]
+        elif "desktop" in low_hint:
+            dirs = [d for d in dirs if d == base or d.name.lower() == "desktop"]
+        for d in dirs:
+            searched.append(str(d))
+            try:
+                if d == base:
+                    # Project dir: recursive, capped to 200 hits for speed.
+                    hits = [p for p in d.rglob("*") if p.is_file() and p.name.lower() == target.lower()][:200]
+                    candidates.extend(hits)
+                else:
+                    # Home dirs: top-level only (never recurse the machine).
+                    p = d / target
+                    try:
+                        if p.is_file():
+                            candidates.append(p)
+                    except OSError:
+                        pass
+                    # Case-insensitive fallback (Windows is CI, macOS/Linux not).
+                    if not candidates:
+                        try:
+                            for child in d.iterdir():
+                                try:
+                                    if child.is_file() and child.name.lower() == target.lower():
+                                        candidates.append(child)
+                                        break
+                                except OSError:
+                                    continue
+                        except OSError:
+                            pass
+            except OSError:
+                continue
+    if not candidates:
+        raise HTTPException(400, f"Found no '{target}'. Searched: {' | '.join(searched) or '(none)'}.")
+    # Dedupe identical files; if 2+ distinct, refuse to guess.
+    uniq: list[_Path] = []
+    seen = set()
+    for p in candidates:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    if len(uniq) > 1:
+        names = [str(p) for p in uniq[:10]]
+        raise HTTPException(400, f"Found {len(uniq)} files named '{target}' — be specific: {' | '.join(names)}.")
+    src = uniq[0]
+    try:
+        raw = src.read_bytes()
+    except Exception as e:
+        raise HTTPException(400, f"Could not read '{src}': {type(e).__name__} (nothing written).")
+    if not raw:
+        raise HTTPException(400, "File is empty (nothing written).")
+    if len(raw) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(413, f"File too large ({len(raw)}B > 15MB — nothing written).")
+    lname = target.lower()
+    ext = None
+    for cand in (".svg", ".png", ".jpg", ".jpeg", ".webp"):
+        if lname.endswith(cand):
+            ext = cand
+            break
+    if ext is None:
+        head = raw[:512].lstrip().lower()
+        if head.startswith(b"<svg") or head.startswith(b"<?xml"):
+            ext = ".svg"
+        else:
+            try:
+                _validate_raster_bytes(raw)
+                ext = ".png"
+            except ValueError:
+                ext = None
+    if ext is None or (ext == ".webp"):
+        # Storage lanes are svg + png/jpg only (fetch lane rejects webp at
+        # write time too — convert externally first).
+        if ext == ".webp":
+            raise HTTPException(400, "WEBP is not stored (convert to PNG/JPG first — nothing written).")
+        raise HTTPException(400, "File is not .svg/.png/.jpg/.jpeg (nothing written).")
+    proj_db = await get_project_db(folder)
+    async with proj_db.execute("SELECT * FROM generations WHERE id=? AND project_id=?",
+                               (gen_id, project_id)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        await proj_db.close()
+        raise HTTPException(404, "Generation not found")
+    row = dict(row)
+    label = row["gen_label"] or row["asset_ref"] or f"gen{gen_id}"
+    clean = _sanitize_svg_base(label)
+    if ext == ".svg":
+        try:
+            clean_svg = validate_svg_text(raw.decode("utf-8", errors="strict"))
+        except (ValueError, UnicodeDecodeError) as e:
+            await proj_db.close()
+            raise HTTPException(400, f"{str(e)[:280]} (nothing written).")
+        svg_dir = base / "06_sheets" / "svg"
+        svg_dir.mkdir(parents=True, exist_ok=True)
+        previous_file = row.get("file_path") or ""
+        drop_user_file = previous_file.startswith(_FETCH_SUBDIR + "/")
+        try:
+            ver = _next_svg_version(svg_dir, clean)
+            rel = f"06_sheets/svg/{clean}_v{ver}.svg"
+            (svg_dir / f"{clean}_v{ver}.svg").write_text(clean_svg, encoding="utf-8")
+        except Exception as e:
+            await proj_db.close()
+            raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+        await proj_db.execute(
+            "UPDATE generations SET svg_path=?, file_path=?, status='generated', source='uploaded', "
+            "error='', updated_at=? WHERE id=?",
+            (rel, ("" if drop_user_file else previous_file), _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "generated", "svg_path": rel,
+                "version": ver, "source": "uploaded", "resolved_from": str(src),
+                "file_path": ("" if drop_user_file else previous_file)}
+    try:
+        _validate_raster_bytes(raw)
+    except ValueError as e:
+        await proj_db.close()
+        raise HTTPException(400, f"{e} (nothing written).")
+    store_ext = ".jpg" if ext == ".jpeg" else ext
+    if row["kind"] in ("master", "pose"):
+        # Old PNG lane (Gemini masters/poses): same layout _generate_row writes,
+        # status 'ready' so library/preview treat it as final art.
+        rel = f"06_assets/generated/{row['gen_label']}_{row['asset_ref']}" + (f"_{row['beat_id']}" if row["beat_id"] else "") + store_ext
+        dest = base / rel
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+        except Exception as e:
+            await proj_db.close()
+            raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+        await proj_db.execute(
+            "UPDATE generations SET file_path=?, status='ready', source='uploaded', "
+            "error='', updated_at=? WHERE id=?",
+            (rel, _now(), gen_id))
+        await proj_db.commit()
+        await proj_db.close()
+        return {"gen_id": gen_id, "status": "ready", "file_path": rel,
+                "version": 1, "source": "uploaded", "resolved_from": str(src)}
+    fetch_dir = base / _FETCH_SUBDIR
+    fetch_dir.mkdir(parents=True, exist_ok=True)
+    previous = row.get("file_path") or ""
+    try:
+        ver = _next_fetch_version(fetch_dir, clean)
+        rel = f"{_FETCH_SUBDIR}/{clean}_v{ver}{store_ext}"
+        (fetch_dir / f"{clean}_v{ver}{store_ext}").write_bytes(raw)
+    except Exception as e:
+        await proj_db.close()
+        raise HTTPException(500, f"write failed: {type(e).__name__}: {str(e)[:200]}")
+    await proj_db.execute(
+        "UPDATE generations SET file_path=?, status='generated', source='uploaded', "
+        "error='', updated_at=? WHERE id=?",
+        (rel, _now(), gen_id))
+    await proj_db.commit()
+    await proj_db.close()
+    return {"gen_id": gen_id, "status": "generated", "file_path": rel,
+            "version": ver, "source": "uploaded", "resolved_from": str(src),
+            "previous_file_path": previous or None}
+
+
 # --- SCENES-MP4 P2-T06: approve -> raster PNG (hash-keyed cache) + finalize ---
 # Status ladder: generated -> approved -> final. Approve rasterizes the current
 # svg_path into 06_sheets/raster/<base>_<hash12>.png via Inkscape headless;

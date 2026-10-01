@@ -346,8 +346,11 @@ async def compose(project_id: str):
 
 
 @router.get("/projects/{project_id}/prompts/pack")
-async def pack(project_id: str):
+async def pack(project_id: str, beat_id: str | None = None):
     counts, generations, scenes = await _compose_all(project_id, update_db=False, write=False)
+    if beat_id:
+        generations = [g for g in generations if (g.get("beat_id") or "") == beat_id]
+        scenes = [s for s in scenes if s.get("beat_id") == beat_id]
     return {"counts": counts, "generations": generations, "scenes": scenes}
 
 

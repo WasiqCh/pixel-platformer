@@ -861,6 +861,11 @@ async def scene_coverage(project_id: str):
                 reason = _coverage_reason(named, planned) if thin else ""
                 if thin:
                     thin_count += 1
+                # CHATBOT_RUNBOOK §5 freshness guard (advisory only, never blocks):
+                # bare character/place IDs (C01, E02 with no -pose suffix) mean
+                # the planner collapsed distinct stagings into one master — a
+                # new pose is a new asset (C01-stand vs C01-point), never bare.
+                bare_refs = [r for r in refs if re.fullmatch(r"[CE]\d+", r)]
                 beats_out.append({
                     "beat_id": bid,
                     "named": named,
@@ -869,11 +874,13 @@ async def scene_coverage(project_id: str):
                     "has_scene": bid in scene_set,
                     "thin": thin,
                     "reason": reason,
+                    "bare_refs": bare_refs,
                 })
         finally:
             await proj_db.close()
+        bare_count = sum(1 for b in beats_out if b["bare_refs"])
         return {"beats": beats_out, "thin_count": thin_count,
-                "total_beats": len(beat_ids)}
+                "total_beats": len(beat_ids), "bare_count": bare_count}
     except HTTPException:
         raise
     except Exception as e:
